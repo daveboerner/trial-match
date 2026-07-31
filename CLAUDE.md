@@ -154,12 +154,22 @@ a live encounter in context to test against at all.
 
 ### App registration — in progress (started 2026-07-31)
 
-- **Hosting:** Vercel, connected to the GitHub repo below. No custom
-  domain yet — using whatever `*.vercel.app` URL Vercel assigns on first
-  import. Once known, it drives the registration form: App URL = that
-  URL; Launch Endpoint = same (root `/`, reads query params itself);
-  Token Endpoint = `<App URL>/api/auth/token`; Allowed URLs = that URL;
-  Worker Launch Endpoint = blank (no Worker App).
+- **Hosting:** Vercel, connected to the GitHub repo below. Production URL
+  (confirmed live 2026-07-31): `https://trial-match-davesboerner-7206s-projects.vercel.app`.
+  **Do not use `https://trial-match.vercel.app`** — that name was already
+  claimed by an unrelated third-party project ("Cureiosity"); `*.vercel.app`
+  names are global, not scoped to our account, and that clean name lost
+  the race. Use the team-scoped alias above (no random hash — that part's
+  stable across redeploys; the hash-suffixed per-deployment URL isn't).
+  Registration form values, from that URL: App URL = it; Launch Endpoint =
+  same (root `/`, reads query params itself); Token Endpoint = `<App
+  URL>/api/auth/token`; Allowed URLs = it; Worker Launch Endpoint = blank
+  (no Worker App).
+- **Deployment Protection:** was ON by default (Vercel SSO wall, blocked
+  *all* access including production — not just previews). Turned off
+  2026-07-31 via Project → Settings → Deployment Protection. If a future
+  redeploy or new team project mysteriously 302s to `vercel.com/sso-api`,
+  check this setting first.
 - **Repo:** https://github.com/daveboerner/trial-match — **public**, by
   explicit choice (not the default recommendation, which was private —
   noting this so a future session doesn't "fix" it back to private
