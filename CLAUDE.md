@@ -10,16 +10,16 @@ making changes. Update it when a phase completes or a decision changes.
 
 ## Current status
 
-**Phase 1 (trial-search backend) is done and tested.** Everything else is
-not started. If you're picking this up fresh, your first job is the item
-under "Immediate first task" below, before touching Phase 2.
+**Phases 1, 1.5, and 2 are done.** If you're picking this up fresh, your
+first job is Phase 3 (wire the real backend into the Phase 2 UI) — see
+"Phase 2 notes" below for what to swap out.
 
 | Phase | What | Status |
 |---|---|---|
 | 1 | Trial-search backend (geocode, CT.gov v2 client, normalize, cache) | ✅ Done — 10 unit tests passing, typechecks clean |
 | 1.5 | Live smoke test against real network | ✅ Done 2026-07-31 — see results below |
-| 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ⬜ **Not started — do this next** |
-| 3 | Wire real Phase 1 API into Phase 2 UI | ⬜ Not started |
+| 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
+| 3 | Wire real Phase 1 API into Phase 2 UI | ⬜ **Not started — do this next** |
 | 4 | Vim SDK: app registration, OAuth launch flow, `chart_open` handler | ⬜ Not started |
 | 5 | Encounter writeback (Tier 1) | ⬜ Not started |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
@@ -37,10 +37,45 @@ against real `zippopotam.us` and `clinicaltrials.gov` endpoints:
 - Out-of-range radius (`99999`) → 400 `validation_error`.
 - `npm test` (10/10) and `npm run typecheck` both clean afterward.
 
-Next up is **Phase 2: trial-card UI on mock/fixture data, no Vim SDK yet.**
-Build it against `test/fixtures/sample-study.json` /
-`NormalizedTrial` shapes so it doesn't depend on a live network call during
-UI iteration; wire the real Phase 1 API in during Phase 3.
+## Phase 2 notes (done 2026-07-31)
+
+Built as a plain Next.js App Router page — no Vim SDK, no network call.
+
+- `src/lib/mock-data.ts` — `MOCK_ACTIVE_PROBLEMS` (stand-in for
+  `sdk.ehr.api.patient.getProblems()`) and `MOCK_TRIALS_BY_CONDITION`, a
+  handful of real `NormalizedTrial` records adapted verbatim from the
+  Phase 1.5 live smoke test response (real NCT IDs/locations, so it's
+  representative — not synthetic). Only `'heart attack'` has entries; the
+  other two mock problems intentionally have none, to exercise the
+  empty-results state.
+- `src/app/page.tsx` — problem picklist + radius select + Search button.
+  `filterByRadius()` client-side mimics the backend's distance filter +
+  nearest-location recompute (see `src/lib/search-trials.ts`,
+  `normalize.ts`) purely so the radius control does something meaningful
+  against static data — this function goes away in Phase 3.
+- `src/components/TrialCard.tsx` — presentational card (status badge,
+  phase/type tags, sponsor, matched condition, nearest location + contact,
+  collapsible nearby locations, link to CT.gov). Includes a disabled "Add
+  to chart" button (title tooltip references Phase 5) so the writeback
+  affordance has a home in the layout already — not wired to anything.
+- Verified: `npm run typecheck` clean, `npm test` 10/10, dev server
+  renders `/` with the picklist and empty-state copy present in the
+  initial HTML. The `filterByRadius` logic itself was also exercised
+  directly (outside React) against the mock dataset across radius
+  25/50/100/500 — counts increase correctly as radius grows. Not verified:
+  actual browser interaction (select → click Search → cards render) — no
+  browser-automation tool was available in that session; the untested
+  surface is React state wiring (`useState`/`onChange`/`onClick`), not the
+  filtering logic.
+- Added `baseUrl`/`paths` (`@/*` → `./src/*`) and `DOM`/`DOM.Iterable` to
+  `lib` in `tsconfig.json` — Phase 1 didn't need either (backend-only,
+  no JSX/DOM types), Phase 2 does.
+
+**Phase 3 replaces:** `MOCK_ACTIVE_PROBLEMS` with a real problems source
+(mocked API call now, `sdk.ehr.api.patient.getProblems()` later in Phase
+4), `MOCK_TRIALS_BY_CONDITION` + `filterByRadius()` with a real fetch to
+`/api/trial-search`, using `radiusMiles` as a request param instead of a
+client-side re-filter.
 
 ## Architecture decisions (and why — don't relitigate these without reason)
 
