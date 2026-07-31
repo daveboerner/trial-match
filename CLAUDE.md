@@ -10,9 +10,12 @@ making changes. Update it when a phase completes or a decision changes.
 
 ## Current status
 
-**Phases 1 through 3 are done.** If you're picking this up fresh, your
-first job is Phase 4 (Vim SDK wiring) — see "Phase 3 notes" below for
-exactly what it needs to replace in the current UI.
+**Phases 1 through 3 are done; Phase 4 is partially done (code only).**
+The client-side Vim SDK integration is written and verified in standalone
+mode. What's *not* done — and isn't something this codebase can do on its
+own — is registering Trial Match as a real Vim app (app ID, manifest,
+sandbox EHR access). That's a prerequisite for ever seeing `chart-ready`
+state for real. See "Phase 4 notes" below.
 
 | Phase | What | Status |
 |---|---|---|
@@ -20,7 +23,7 @@ exactly what it needs to replace in the current UI.
 | 1.5 | Live smoke test against real network | ✅ Done 2026-07-31 — see results below |
 | 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
 | 3 | Wire real Phase 1 API into Phase 2 UI | ✅ Done 2026-07-31 — see Phase 3 notes below |
-| 4 | Vim SDK: app registration, OAuth launch flow, `chart_open` handler | ⬜ **Not started — do this next** |
+| 4 | Vim SDK: `chart_open` handler + graceful fallback | 🟡 Code done 2026-07-31, unverified against a real chart — **app registration still needed, see Phase 4 notes** |
 | 5 | Encounter writeback (Tier 1) | ⬜ Not started |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
 
@@ -69,14 +72,15 @@ Built as a plain Next.js App Router page — no Vim SDK, no network call.
 
 Replaced the mock trial dataset with a real `fetch('/api/trial-search')`
 call from `src/app/page.tsx`. `MOCK_ACTIVE_PROBLEMS` (the problem
-picklist) is **still mocked, on purpose** — that's Phase 4's job
-(`sdk.ehr.api.patient.getProblems()`), not this one.
+picklist) was **still mocked at this point, on purpose** — that became
+Phase 4's job. (Phase 4 note: it now sources the picklist from
+`chart_open` directly, not a `getProblems()` call — see Phase 4 notes.)
 
 - Added a **patient zip text input** to the search panel (default
-  `33140`). There's no patient chart context yet (that's Phase 4), so
-  this is the temporary stand-in for the zip Phase 4 will resolve from
-  `sdk.ehr.api.patient.getDemographics()` / chart address. When Phase 4
-  lands, this input goes away and zip comes from chart context instead.
+  `33140`). There was no patient chart context yet at this point (that
+  came in Phase 4), so this was the temporary stand-in for the zip.
+  (Phase 4 note: the input didn't go away — it's still there, editable in
+  standalone/dev mode and read-only once a real chart supplies the zip.)
 - Added `status` state (`idle | loading | error | success`) and an
   `ERROR_MESSAGES` map keyed by the API's error codes
   (`validation_error`, `geocode_failed`, `trial_search_upstream_failed`,
@@ -98,11 +102,55 @@ picklist) is **still mocked, on purpose** — that's Phase 4's job
   Still not verified: real browser click-through (same gap as Phase 2 —
   no browser-automation tool in that session).
 
-**Phase 4 needs to replace:** `MOCK_ACTIVE_PROBLEMS` in
-`src/lib/mock-data.ts` with `sdk.ehr.api.patient.getProblems()`, and the
-zip text input in `page.tsx` with a zip resolved from chart/patient
-context — per the architecture decision below, geocode to zip precision
-only, never pass a full street address or patientId downstream.
+## Phase 4 notes (code done 2026-07-31, app registration still outstanding)
+
+**Before touching this again, re-read the "Vim SDK reference" section
+below — it corrects three wrong assumptions from the original chat
+transfer** (auth model, event data shape, event names). Don't trust the
+old assumptions if you see them referenced anywhere else (e.g. in
+scrollback) — the corrected version below is what's actually verified
+against `@vimconnect/app-sdk@0.4.50`'s real type definitions.
+
+- `src/lib/use-chart-context.ts` — `useChartContext()` hook. Calls
+  `initVimSDK({ handshakeTimeout: 4000 })` on mount; on success,
+  subscribes to `chart_open` and derives both the problem picklist *and*
+  the zip straight from the event (`patient.problems[]`,
+  `patient.address.zipCode`) — no separate `getProblems()`/
+  `getDemographics()` call needed for what this app uses. On failure
+  (no Vim Hub to connect to), silently stays in the mock/standalone
+  fallback — this is the expected path for local dev, not an error state.
+- Three UI states now drive `src/app/page.tsx`: `standalone` (mock
+  picklist + editable zip, same as Phase 3), `waiting-for-chart`
+  (connected to Vim, no chart open yet — search disabled), `chart-ready`
+  (real problems + read-only zip from the event).
+- Problem-status filtering (`isActiveStatus` in `use-chart-context.ts`)
+  is a **best-effort heuristic, not a verified contract** — the SDK's
+  `problems[].status` field has no fixed enum, it's whatever string the
+  source EHR sends. Currently excludes only a denylist
+  (`resolved`/`inactive`/`remission`/`ruled_out`) and keeps anything else
+  (including missing status). Revisit once tested against a real EHR
+  feed — the denylist may need entries added, or may be wrong entirely
+  for some EHRs.
+- `zod` was added as a direct dependency (SDK's `peerDependencies` require
+  v4+); `@vimconnect/app-sdk` added as a normal dependency.
+- Verified: typecheck clean, `npm test` 10/10, dev server renders `/` in
+  `standalone` mode with the mock picklist intact (confirms the fallback
+  path works when there's no SDK to connect to, which is the only mode
+  reachable from local dev). **Not verified:** anything past that —
+  no real Vim app registration exists yet, so `waiting-for-chart` and
+  `chart-ready` have never actually been exercised against a live
+  `initVimSDK()` connection or a real `chart_open` event. Same
+  browser-automation gap as Phases 2–3 also applies here.
+
+**What's needed before Phase 4 can be considered done, not just
+coded:** register Trial Match as a Vim app (app ID, manifest, sandbox EHR
+access) — this happens through Vim's internal process, outside this
+repo, and only Dave can drive it. Once that exists: confirm
+`initVimSDK()` actually connects inside a real sandboxed chart, confirm a
+real `chart_open` event's shape matches what `use-chart-context.ts`
+assumes (especially `problems[].status` values — see above), and only
+then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
+a live encounter in context to test against at all.
 
 ## Architecture decisions (and why — don't relitigate these without reason)
 
@@ -134,31 +182,76 @@ only, never pass a full street address or patientId downstream.
 
 ## Vim SDK reference (`@vimconnect/app-sdk`)
 
+**Corrected 2026-07-31 against the real installed package
+(`@vimconnect/app-sdk@0.4.50`, its `dist/index.d.ts` and `dist/index.mjs`
+read directly) — not just doc pages.** The original chat transfer's notes
+(now in `## Architecture decisions` / git history if you look) got three
+things wrong. If any future context (old scrollback, a stale summary)
+repeats those three claims, this section wins — it's verified against
+the actual package, not a doc skim.
+
 Docs: https://developer-docs.getvim.ai/docs/ — this is the **new** SDK,
 distinct from the legacy `docs.getvim.com` VimOS.js docs. Don't mix the two
 APIs up if searching for reference material.
 
-Key pages already reviewed:
-- `docs/ehr-connectivity/` (overview, workflow-events, context, entity-api, writeback)
-- `docs/authentication/` — OAuth 2.0 authorization-code flow, server-side token exchange
-- `docs/api-reference/entity-types/` — Patient/Encounter/Order/Referral field lists
+**1. Auth is not a manual OAuth redirect flow we build.** There is no
+`/app-auth/authorize` or `/app-auth/token` route to implement in this app.
+`initVimSDK(options?)` handles it: if you don't pass `accessToken`, it
+looks for a `token_endpoint` query param on the page URL (appended by
+whatever launched the app — presumably Vim's Hub) and fetches the token
+itself. Mechanically, `initVimSDK()` injects a `<script>` tag that loads
+`https://core-sdk.getvim.ai/index.js` (a **real network call to Vim's own
+CDN** — this happens even from a plain local-dev browser tab with no Vim
+context) and then waits for a postMessage handshake, presumably from a
+parent frame when actually embedded in Vim's Hub. Outside that context,
+it just times out — there's no separate extension-detection step that
+fails fast, which is why `use-chart-context.ts` passes a short
+`handshakeTimeout` (4000ms) rather than eating the 10s default on every
+local dev page load. `sdk.sessionContext.getIdToken()` is a *different*
+thing — an OIDC ID token for SSO-ing the Vim-logged-in user into *our
+own* backend, not part of app-launch auth.
+- Confirm the `token_endpoint` launch-URL convention against a real Vim
+  Hub launch once app registration exists — inferred from the SDK's
+  `SDKInitOptions` doc comment, not yet observed live.
 
-Core facts:
-- `sdk.ehr.workflow.on('chart_open', handler)` fires once; `event.entities.patient`
-  is a **reference only** (`{id, entityType}`), not full data. Follow up with
-  `sdk.ehr.api.patient.getProblems({patientId})` / `getDemographics({patientId})`
-  to get real data.
-- `sdk.ehr.context.onChange(key, (prev, curr) => ...)` fires continuously —
-  used for gating UI state (e.g. is an encounter currently in context).
-- Writeback is capability-gated per EHR: always call
-  `sdk.ehr.context.<entity>.getCapability('update')` before attempting a
-  write, and check `hasPermission('update')` /
-  `requestPermission('update')` for disruptive operations. Never assume a
-  capability exists — build the UI to degrade gracefully when it doesn't.
-- Auth: OAuth 2.0 authorization-code flow. Launch URL receives `launch_id`
-  — redirect to `/app-auth/authorize` — Vim redirects back with `code` +
-  `state` — exchange server-side at `/app-auth/token` (client secret never
-  touches the browser) — `initVimSDK({ accessToken })`.
+**2. `chart_open`'s `entities.patient` is real inline data, not a bare
+reference.** Confirmed from `ChartOpenEventSchema` / the shared `Patient`
+type in the SDK's own `.d.ts`: the event carries `patient.problems[]`
+(`{code, status, system, onSetDate, description}`, all optional),
+`patient.address` (`{city, state, zipCode, address1, address2}`, all
+optional), plus `demographics`, `allergies`, `insurances`, `labResults`,
+`contactInfo`, `identifiers`, `pcp` — all inline, all optional (an EHR may
+not populate any given field). This means Phase 4 didn't need a
+`getProblems()`/`getDemographics()` follow-up call at all for what Trial
+Match uses (see `use-chart-context.ts`). `sdk.ehr.api.patient.getProblems()`
+still exists as a real, no-arg (context-resolved) fallback API — worth
+adding *only if* a specific EHR turns out not to populate `problems`
+inline on `chart_open` (not yet observed either way).
+- `sdk.ehr.workflow.on(eventTypes, callback)` takes a *typed* event name
+  or array (`'chart_open' | 'encounter_open' | 'referral_start' |
+  'referral_save' | 'order_select' | 'order_sign'`, per `EventTypeSchema`)
+  and returns an unsubscribe function directly (not a separate `.off()`
+  call, though `.off()` also exists).
+
+**3. `sdk.ehr.context.<entityType>` writeback shape** (relevant for Phase
+5, confirmed now so it's not re-litigated later): `getCapability('update',
+{fields?})` returns `{available: false, reason} | {available: true,
+disruptive, permissionState}`; `hasPermission('update', {fields?})` is
+sugar for "available && granted"; `requestPermission('update', {fields?})`
+resolves `'granted' | 'denied'`; `update(data, {mode?: 'override' |
+'append'})` takes a **plain nested object** — dot-notation string keys
+(`'assessment.plan'`) throw `INVALID_DATA`. (Note: **no `'merge'` mode** —
+only `override`/`append` are valid on the concrete writeback namespace,
+despite an older generic type in the same package showing `merge` as an
+option. Use `append` for Tier 1, per the writeback plan below.)
+
+Still accurate from the original review:
+- `sdk.ehr.context.onChange(key, (prev, curr) => ...)` fires continuously
+  — used for gating UI state (e.g. is an encounter currently in context).
+- Writeback is capability-gated per EHR: always check
+  `getCapability`/`hasPermission` before attempting a write. Never assume
+  a capability exists — build the UI to degrade gracefully when it
+  doesn't.
 
 ## Writeback plan (Phases 5–6) — three tiers, build in this order
 
@@ -168,11 +261,17 @@ Core facts:
    const cap = sdk.ehr.context.encounter.getCapability('update');
    if (cap.available && sdk.ehr.context.encounter.hasPermission('update')) {
      await sdk.ehr.context.encounter.update(
-       { assessment: { plan: `Clinical trial candidate: ${trial.title} (NCT${trial.nctId}) — ${trial.site}, ${trial.contactPhone}` } },
+       { plan: { generalNotes: `Clinical trial candidate: ${trial.title} (NCT${trial.nctId}) — ${trial.site}, ${trial.contactPhone}` } },
        { mode: 'append' }
      );
    }
    ```
+   Field path corrected 2026-07-31: the original chat's `assessment.plan`
+   doesn't exist on the real `Encounter` schema — `EncounterOpenEventSchema`
+   (in the SDK's `.d.ts`) shows `encounter.plan.generalNotes` instead. Still
+   worth double-checking against `getCapability('update')`'s actual
+   `updatableFields` at Phase 5 time — that's the authoritative source for
+   what's actually writable on a given EHR, not the entity schema alone.
 2. **Tier 2 — pre-fill a Referral** (Phase 6, opportunistic, EHR-dependent).
    Listen for `referral_start` (fires when the *provider* initiates a
    referral natively in the EHR — the app doesn't spawn referrals on its
@@ -212,9 +311,10 @@ Lives at `~/trial-match` (moved here from a Downloads export on 2026-07-31),
 own git repo, `main` branch, no remote configured yet. `.gitignore` covers
 `node_modules/`, `dist/`, `.next/`, `.env*`.
 
-## File manifest (Phase 1, already built)
+## File manifest
 
 ```
+# Phase 1 — backend
 src/types/trial.ts                  Shared types — no patientId field, anywhere
 src/lib/geocode.ts                  zip -> {lat,lng}, cached by zip (zippopotam.us)
 src/lib/ctgov-client.ts             ClinicalTrials.gov v2 client
@@ -225,6 +325,16 @@ src/app/api/trial-search/route.ts   Next.js route handler
 test/fixtures/sample-study.json     Realistic fixture (has duplicate locations by status)
 test/normalize.test.ts              10 passing tests, no network required
 README.md                           Phase 1-specific setup/testing notes
+
+# Phase 2/3 — UI + wiring
+src/app/layout.tsx                  Root layout, imports globals.css
+src/app/globals.css                 Plain CSS, no framework — cards, badges, form controls
+src/app/page.tsx                    Main page: picklist, zip, radius, search, results
+src/components/TrialCard.tsx        Presentational trial card (status/phase/location/contact)
+
+# Phase 4 — Vim SDK
+src/lib/mock-data.ts                MOCK_ACTIVE_PROBLEMS only now (trial mocks removed in Phase 3)
+src/lib/use-chart-context.ts        initVimSDK() + chart_open subscription, standalone fallback
 ```
 
 ## Testing conventions established so far
