@@ -152,6 +152,34 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
+### App registration — in progress (started 2026-07-31)
+
+- **Hosting:** Vercel, connected to the GitHub repo below. No custom
+  domain yet — using whatever `*.vercel.app` URL Vercel assigns on first
+  import. Once known, it drives the registration form: App URL = that
+  URL; Launch Endpoint = same (root `/`, reads query params itself);
+  Token Endpoint = `<App URL>/api/auth/token`; Allowed URLs = that URL;
+  Worker Launch Endpoint = blank (no Worker App).
+- **Repo:** https://github.com/daveboerner/trial-match — **public**, by
+  explicit choice (not the default recommendation, which was private —
+  noting this so a future session doesn't "fix" it back to private
+  without asking first).
+- **Vim client_id:** `305d7d2a-7f7b-45ae-83db-75c70071d75b` — real value,
+  in `.env.local` (gitignored) and needs to be added as a Vercel
+  environment variable too (`.env.local` isn't deployed). `.env.example`
+  documents the required var names.
+- **Vim client_secret:** not yet issued/added. `POST /api/auth/token`
+  (see `src/app/api/auth/token/route.ts`) will 500 with `not_configured`
+  until `VIM_CLIENT_SECRET` is set — both locally in `.env.local` and as
+  a Vercel env var (redeploy after adding it there).
+- **Token exchange contract** (confirmed against
+  developer-docs.getvim.ai/docs/authentication, not guessed): browser
+  POSTs `{code}` to our Token Endpoint; we POST
+  `{grant_type: 'authorization_code', code, client_id, client_secret}` to
+  `{VIM_BACKEND_URL}/app-auth/token` (`https://api.getvim.ai` prod /
+  `https://api.stage.getvim.ai` staging); response is `{access_token,
+  token_type, expires_in, scope}`, returned as-is to the browser.
+
 ## Architecture decisions (and why — don't relitigate these without reason)
 
 - **Use the public ClinicalTrials.gov API v2** (`clinicaltrials.gov/api/v2/studies`),
@@ -194,12 +222,23 @@ Docs: https://developer-docs.getvim.ai/docs/ — this is the **new** SDK,
 distinct from the legacy `docs.getvim.com` VimOS.js docs. Don't mix the two
 APIs up if searching for reference material.
 
-**1. Auth is not a manual OAuth redirect flow we build.** There is no
-`/app-auth/authorize` or `/app-auth/token` route to implement in this app.
-`initVimSDK(options?)` handles it: if you don't pass `accessToken`, it
-looks for a `token_endpoint` query param on the page URL (appended by
-whatever launched the app — presumably Vim's Hub) and fetches the token
-itself. Mechanically, `initVimSDK()` injects a `<script>` tag that loads
+**1. Auth needs a real server-side route, but not a redirect flow we
+build ourselves.** **Corrected again 2026-07-31** — an earlier version of
+this note said "no route to implement," which was wrong; app registration
+surfaced that Vim's Hub does need our app to host a token endpoint. What's
+still true: we don't build the authorize-redirect step (Vim's Hub handles
+that on its side before ever loading our page). What we *do* build:
+`POST /api/auth/token` (see `src/app/api/auth/token/route.ts` and the
+"App registration" notes above) — Vim's Hub calls our registered Token
+Endpoint URL (via the browser, POSTing `{code}`), and our server
+exchanges that code for a token by calling
+`{VIM_BACKEND_URL}/app-auth/token` server-side with our client_id +
+client_secret (confirmed against developer-docs.getvim.ai/docs/authentication).
+Client-side, `initVimSDK(options?)` still handles the browser half: if
+you don't pass `accessToken`, it looks for a `token_endpoint` query param
+on the page URL (which Vim's Hub appends, pointing at our registered
+endpoint) and fetches from it itself — we don't write that client-side
+fetch. Mechanically, `initVimSDK()` injects a `<script>` tag that loads
 `https://core-sdk.getvim.ai/index.js` (a **real network call to Vim's own
 CDN** — this happens even from a plain local-dev browser tab with no Vim
 context) and then waits for a postMessage handshake, presumably from a
@@ -210,9 +249,10 @@ fails fast, which is why `use-chart-context.ts` passes a short
 local dev page load. `sdk.sessionContext.getIdToken()` is a *different*
 thing — an OIDC ID token for SSO-ing the Vim-logged-in user into *our
 own* backend, not part of app-launch auth.
-- Confirm the `token_endpoint` launch-URL convention against a real Vim
-  Hub launch once app registration exists — inferred from the SDK's
-  `SDKInitOptions` doc comment, not yet observed live.
+- Still to confirm against a real Vim Hub launch (once registration is
+  live): the exact `token_endpoint` query-param convention, and that our
+  `/api/auth/token` route's request/response shapes match what the Hub
+  actually sends/expects.
 
 **2. `chart_open`'s `entities.patient` is real inline data, not a bare
 reference.** Confirmed from `ChartOpenEventSchema` / the shared `Patient`
