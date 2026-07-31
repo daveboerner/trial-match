@@ -10,12 +10,15 @@ making changes. Update it when a phase completes or a decision changes.
 
 ## Current status
 
-**Phases 1 through 3 are done; Phase 4 is partially done (code only).**
-The client-side Vim SDK integration is written and verified in standalone
-mode. What's *not* done — and isn't something this codebase can do on its
-own — is registering Trial Match as a real Vim app (app ID, manifest,
-sandbox EHR access). That's a prerequisite for ever seeing `chart-ready`
-state for real. See "Phase 4 notes" below.
+**Phases 1 through 3 are done; Phase 4 code + infra are done, Vim-side
+registration is the last open step.** The app is public at
+`https://trial-match-davesboerner-7206s-projects.vercel.app`, deployed
+from a public GitHub repo, with a working, verified token-exchange
+endpoint (`/api/auth/token` correctly configured — see Phase 4 notes for
+what "verified" means here without a real Vim launch yet). What's left
+is submitting Vim's app-registration form with the values in Phase 4
+notes, and then testing against a real sandboxed chart. That's the
+prerequisite for ever seeing `chart-ready` state for real.
 
 | Phase | What | Status |
 |---|---|---|
@@ -23,7 +26,7 @@ state for real. See "Phase 4 notes" below.
 | 1.5 | Live smoke test against real network | ✅ Done 2026-07-31 — see results below |
 | 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
 | 3 | Wire real Phase 1 API into Phase 2 UI | ✅ Done 2026-07-31 — see Phase 3 notes below |
-| 4 | Vim SDK: `chart_open` handler + graceful fallback | 🟡 Code done 2026-07-31, unverified against a real chart — **app registration still needed, see Phase 4 notes** |
+| 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration | 🟡 Code + infra done 2026-07-31 — **submit the Vim app-registration form next, then test against a real chart** |
 | 5 | Encounter writeback (Tier 1) | ⬜ Not started |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
 
@@ -152,7 +155,7 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
-### App registration — in progress (started 2026-07-31)
+### App registration — infra done 2026-07-31; Vim-side registration form still to submit
 
 - **Hosting:** Vercel, connected to the GitHub repo below. Production URL
   (confirmed live 2026-07-31): `https://trial-match-davesboerner-7206s-projects.vercel.app`.
@@ -175,13 +178,25 @@ a live encounter in context to test against at all.
   noting this so a future session doesn't "fix" it back to private
   without asking first).
 - **Vim client_id:** `305d7d2a-7f7b-45ae-83db-75c70071d75b` — real value,
-  in `.env.local` (gitignored) and needs to be added as a Vercel
-  environment variable too (`.env.local` isn't deployed). `.env.example`
-  documents the required var names.
-- **Vim client_secret:** not yet issued/added. `POST /api/auth/token`
-  (see `src/app/api/auth/token/route.ts`) will 500 with `not_configured`
-  until `VIM_CLIENT_SECRET` is set — both locally in `.env.local` and as
-  a Vercel env var (redeploy after adding it there).
+  in `.env.local` (gitignored) and set as a Vercel Production env var.
+  `.env.example` documents the required var names (no real values).
+- **Vim client_secret:** issued and configured 2026-07-31 — in
+  `.env.local` and as a Vercel env var. **Gotcha hit during setup:**
+  adding a Vercel env var does not retroactively apply to an
+  already-running deployment — a genuinely new deployment is required
+  after adding/changing one. First redeploy attempt still 500'd
+  `not_configured`; a second redeploy (after confirming the var name and
+  Production-environment scope in the dashboard) fixed it.
+- **Token endpoint verified working, 2026-07-31:** `POST
+  /api/auth/token` with a fake `{"code":"test"}` against production now
+  returns `502 token_exchange_failed` — this is the *correct* result: it
+  means `VIM_CLIENT_ID`/`VIM_CLIENT_SECRET` are both present and it
+  successfully attempted (and Vim's real server correctly rejected) the
+  exchange. A `500 not_configured` would mean the env vars are missing;
+  `502` is what a fake/invalid code should produce. Only a real code from
+  an actual Vim Hub launch can produce a `200` here — not yet tested,
+  since app registration with Vim (the actual form, not just our infra)
+  hadn't been confirmed submitted as of this note.
 - **Token exchange contract** (confirmed against
   developer-docs.getvim.ai/docs/authentication, not guessed): browser
   POSTs `{code}` to our Token Endpoint; we POST
