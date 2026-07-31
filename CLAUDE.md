@@ -17,8 +17,8 @@ under "Immediate first task" below, before touching Phase 2.
 | Phase | What | Status |
 |---|---|---|
 | 1 | Trial-search backend (geocode, CT.gov v2 client, normalize, cache) | ✅ Done — 10 unit tests passing, typechecks clean |
-| 1.5 | Live smoke test against real network | ⬜ **Not done — do this first** (see below) |
-| 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ⬜ Not started |
+| 1.5 | Live smoke test against real network | ✅ Done 2026-07-31 — see results below |
+| 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ⬜ **Not started — do this next** |
 | 3 | Wire real Phase 1 API into Phase 2 UI | ⬜ Not started |
 | 4 | Vim SDK: app registration, OAuth launch flow, `chart_open` handler | ⬜ Not started |
 | 5 | Encounter writeback (Tier 1) | ⬜ Not started |
@@ -26,29 +26,21 @@ under "Immediate first task" below, before touching Phase 2.
 
 ## Immediate first task
 
-The dev sandbox this was built in had network egress restricted to package
-registries only — it could never reach `zippopotam.us` or
-`clinicaltrials.gov`. Everything downstream of those calls (parsing, dedup,
-distance math, validation) is unit-tested and passing; the live network
-edges are not yet verified. First thing to do in this environment (which
-has real internet access):
+**Superseded — Phase 1.5 is done.** Live smoke test ran clean on 2026-07-31
+against real `zippopotam.us` and `clinicaltrials.gov` endpoints:
 
-```bash
-npm install
-npm run dev
-curl -s http://localhost:3000/api/trial-search \
-  -X POST -H "Content-Type: application/json" \
-  -d '{"conditions":["heart attack"],"zip":"33140","radiusMiles":500}' | python3 -m json.tool
-```
+- `{"conditions":["heart attack"],"zip":"33140","radiusMiles":500}` → 200,
+  10 real recruiting trials near Miami Beach, correctly geocoded
+  (25.82, -80.13) and distance-sorted.
+- Unmatched condition → 200, `trials: []`.
+- Invalid zip (`00000`) → 422 `geocode_failed`.
+- Out-of-range radius (`99999`) → 400 `validation_error`.
+- `npm test` (10/10) and `npm run typecheck` both clean afterward.
 
-Expect a `TrialSearchResponse` with real, current recruiting trials near
-Miami Beach. If it fails, check `filter.overallStatus` syntax in
-`src/lib/ctgov-client.ts` first (see "Known unknowns" below) before
-assuming the bug is elsewhere.
-
-Also worth trying once that works: an unmatched zip (`trials: []`
-expected), an invalid zip (`422 geocode_failed` expected), and an
-out-of-range radius (`400 validation_error` expected).
+Next up is **Phase 2: trial-card UI on mock/fixture data, no Vim SDK yet.**
+Build it against `test/fixtures/sample-study.json` /
+`NormalizedTrial` shapes so it doesn't depend on a live network call during
+UI iteration; wire the real Phase 1 API in during Phase 3.
 
 ## Architecture decisions (and why — don't relitigate these without reason)
 
@@ -130,21 +122,33 @@ Core facts:
 
 ## Known unknowns / things to verify, don't just trust
 
-- `src/lib/ctgov-client.ts`: `filter.overallStatus` is joined
-  comma-separated when passing multiple statuses. This matches the v2 docs
-  as understood at write-time but was **never confirmed against a live
-  call** from the original dev sandbox. If a status filter silently stops
-  narrowing results, check this first.
-- The original `npm install typescript` (no version pin) pulled `7.0.2`,
-  which broke Next's dev server (`next dev` requires a TS compiler API
-  Next hasn't adopted for TS 7 yet). Pinned to `typescript@5.6.3` in this
-  project — don't casually bump the TypeScript version without confirming
-  `next dev` still boots.
+- ~~`filter.overallStatus` unverified against a live call~~ — **resolved
+  2026-07-31.** Confirmed working against a real `clinicaltrials.gov`
+  v2 call (see Phase 1.5 results above): status filtering, dedup, and
+  distance sort all behaved correctly on live data, not just the fixture.
+- TypeScript pin: the code as transferred from the original chat still had
+  `"typescript": "^7.0.2"` in `package.json` (unpinned), despite the prior
+  session's note that it had been fixed to `5.6.3`. Re-applied the pin here
+  on 2026-07-31 — confirmed `npx tsc --version` → `5.6.3`, `next dev` boots
+  clean, `npm test` (10/10) and `npm run typecheck` both pass. Don't casually
+  bump TypeScript without re-confirming `next dev` still boots — that's
+  what broke last time.
+- `npm audit` reports 3 high-severity transitive vulnerabilities (postcss,
+  sharp) pulled in via `next@16.2.12`'s build tooling. The only fix npm
+  offers is downgrading to `next@9.3.3` — a large breaking change, not
+  applied. Revisit before any production deployment; not a blocker for
+  local Phase 2/3 UI work.
 - Location dedup in `normalize.ts` keys on `facility+city+zip` and prefers
   a `RECRUITING` status copy over other statuses when duplicates exist —
   this was verified against a realistic fixture
   (`test/fixtures/sample-study.json`) but not against the full diversity
   of location-status combinations CT.gov actually returns in production.
+
+## Repo setup
+
+Lives at `~/trial-match` (moved here from a Downloads export on 2026-07-31),
+own git repo, `main` branch, no remote configured yet. `.gitignore` covers
+`node_modules/`, `dist/`, `.next/`, `.env*`.
 
 ## File manifest (Phase 1, already built)
 
