@@ -10,17 +10,17 @@ making changes. Update it when a phase completes or a decision changes.
 
 ## Current status
 
-**Phases 1, 1.5, and 2 are done.** If you're picking this up fresh, your
-first job is Phase 3 (wire the real backend into the Phase 2 UI) — see
-"Phase 2 notes" below for what to swap out.
+**Phases 1 through 3 are done.** If you're picking this up fresh, your
+first job is Phase 4 (Vim SDK wiring) — see "Phase 3 notes" below for
+exactly what it needs to replace in the current UI.
 
 | Phase | What | Status |
 |---|---|---|
 | 1 | Trial-search backend (geocode, CT.gov v2 client, normalize, cache) | ✅ Done — 10 unit tests passing, typechecks clean |
 | 1.5 | Live smoke test against real network | ✅ Done 2026-07-31 — see results below |
 | 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
-| 3 | Wire real Phase 1 API into Phase 2 UI | ⬜ **Not started — do this next** |
-| 4 | Vim SDK: app registration, OAuth launch flow, `chart_open` handler | ⬜ Not started |
+| 3 | Wire real Phase 1 API into Phase 2 UI | ✅ Done 2026-07-31 — see Phase 3 notes below |
+| 4 | Vim SDK: app registration, OAuth launch flow, `chart_open` handler | ⬜ **Not started — do this next** |
 | 5 | Encounter writeback (Tier 1) | ⬜ Not started |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
 
@@ -41,18 +41,12 @@ against real `zippopotam.us` and `clinicaltrials.gov` endpoints:
 
 Built as a plain Next.js App Router page — no Vim SDK, no network call.
 
-- `src/lib/mock-data.ts` — `MOCK_ACTIVE_PROBLEMS` (stand-in for
-  `sdk.ehr.api.patient.getProblems()`) and `MOCK_TRIALS_BY_CONDITION`, a
-  handful of real `NormalizedTrial` records adapted verbatim from the
-  Phase 1.5 live smoke test response (real NCT IDs/locations, so it's
-  representative — not synthetic). Only `'heart attack'` has entries; the
-  other two mock problems intentionally have none, to exercise the
-  empty-results state.
+- `src/lib/mock-data.ts` — `MOCK_ACTIVE_PROBLEMS`, stand-in for
+  `sdk.ehr.api.patient.getProblems()`. (Originally also had a
+  `MOCK_TRIALS_BY_CONDITION` static trial dataset + client-side
+  `filterByRadius()`; both were deleted in Phase 3 once the real API was
+  wired in — don't recreate them.)
 - `src/app/page.tsx` — problem picklist + radius select + Search button.
-  `filterByRadius()` client-side mimics the backend's distance filter +
-  nearest-location recompute (see `src/lib/search-trials.ts`,
-  `normalize.ts`) purely so the radius control does something meaningful
-  against static data — this function goes away in Phase 3.
 - `src/components/TrialCard.tsx` — presentational card (status badge,
   phase/type tags, sponsor, matched condition, nearest location + contact,
   collapsible nearby locations, link to CT.gov). Includes a disabled "Add
@@ -71,11 +65,44 @@ Built as a plain Next.js App Router page — no Vim SDK, no network call.
   `lib` in `tsconfig.json` — Phase 1 didn't need either (backend-only,
   no JSX/DOM types), Phase 2 does.
 
-**Phase 3 replaces:** `MOCK_ACTIVE_PROBLEMS` with a real problems source
-(mocked API call now, `sdk.ehr.api.patient.getProblems()` later in Phase
-4), `MOCK_TRIALS_BY_CONDITION` + `filterByRadius()` with a real fetch to
-`/api/trial-search`, using `radiusMiles` as a request param instead of a
-client-side re-filter.
+## Phase 3 notes (done 2026-07-31)
+
+Replaced the mock trial dataset with a real `fetch('/api/trial-search')`
+call from `src/app/page.tsx`. `MOCK_ACTIVE_PROBLEMS` (the problem
+picklist) is **still mocked, on purpose** — that's Phase 4's job
+(`sdk.ehr.api.patient.getProblems()`), not this one.
+
+- Added a **patient zip text input** to the search panel (default
+  `33140`). There's no patient chart context yet (that's Phase 4), so
+  this is the temporary stand-in for the zip Phase 4 will resolve from
+  `sdk.ehr.api.patient.getDemographics()` / chart address. When Phase 4
+  lands, this input goes away and zip comes from chart context instead.
+- Added `status` state (`idle | loading | error | success`) and an
+  `ERROR_MESSAGES` map keyed by the API's error codes
+  (`validation_error`, `geocode_failed`, `trial_search_upstream_failed`,
+  `invalid_json`, `internal_error` — see `route.ts`). The UI prefers the
+  API's own `message` field when present (validation/geocode errors
+  already return a specific, actionable message) and only falls back to
+  the generic copy in `ERROR_MESSAGES` for the two error codes that don't
+  carry one (502/500).
+- `totalCount` vs `trials.length`: if CT.gov's `totalCount` exceeds what
+  was returned (default `pageSize` is 10, see `ctgov-client.ts`), the UI
+  says so explicitly ("of N total — narrow your search or expand
+  radius") rather than silently showing a partial list as if it were
+  complete.
+- Verified against the live server, not just typecheck: confirmed `/`
+  renders the new zip field, sent the *exact* request shape the UI
+  builds and got back real CT.gov trials, and separately confirmed the
+  `geocode_failed` error path (zip `00000`) returns the shape
+  `ERROR_MESSAGES` expects. `npm test` (10/10) and typecheck clean.
+  Still not verified: real browser click-through (same gap as Phase 2 —
+  no browser-automation tool in that session).
+
+**Phase 4 needs to replace:** `MOCK_ACTIVE_PROBLEMS` in
+`src/lib/mock-data.ts` with `sdk.ehr.api.patient.getProblems()`, and the
+zip text input in `page.tsx` with a zip resolved from chart/patient
+context — per the architecture decision below, geocode to zip precision
+only, never pass a full street address or patientId downstream.
 
 ## Architecture decisions (and why — don't relitigate these without reason)
 
