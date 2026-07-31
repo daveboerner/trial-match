@@ -68,6 +68,12 @@ body {
   font-family: inherit;
 }
 
+.field select:disabled,
+.field input:read-only {
+  background: #f1f2f4;
+  color: var(--muted);
+}
+
 .search-btn {
   padding: 0.6rem 1.25rem;
   background: var(--accent);
