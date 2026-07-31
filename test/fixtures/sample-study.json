@@ -1,0 +1,70 @@
+{
+  "protocolSection": {
+    "identificationModule": {
+      "nctId": "NCT06927739",
+      "briefTitle": "Focused Orticumab Research for Treating Inflammation in <mark class=\"hl-synonym\">Coronary</mark> Arteries",
+      "acronym": "FORTIFY"
+    },
+    "statusModule": {
+      "overallStatus": "RECRUITING"
+    },
+    "designModule": {
+      "studyType": "INTERVENTIONAL",
+      "phases": ["PHASE2"]
+    },
+    "sponsorCollaboratorsModule": {
+      "leadSponsor": { "name": "Abcentra" }
+    },
+    "conditionsModule": {
+      "conditions": [
+        "Acute <mark class=\"hl-synonym\">Coronary</mark> Syndromes",
+        "<mark class=\"hl-synonym\">Coronary</mark> Arterial Disease (CAD)",
+        "Inflammation"
+      ]
+    },
+    "contactsLocationsModule": {
+      "centralContacts": [
+        { "name": "Abcentra", "role": "CONTACT", "phone": "424-369-4401", "email": "info@abcentra.com" }
+      ],
+      "locations": [
+        {
+          "facility": "Abcentra Investigational Site",
+          "status": "NOT_YET_RECRUITING",
+          "city": "Los Angeles",
+          "state": "California",
+          "zip": "90048",
+          "country": "United States",
+          "geoPoint": { "lat": 34.05223, "lon": -118.24368 }
+        },
+        {
+          "facility": "Abcentra Investigational Site",
+          "status": "RECRUITING",
+          "city": "Torrance",
+          "state": "California",
+          "zip": "90502",
+          "country": "United States",
+          "geoPoint": { "lat": 33.83585, "lon": -118.34063 }
+        },
+        {
+          "facility": "Abcentra Investigational Site",
+          "status": "ACTIVE_NOT_RECRUITING",
+          "city": "Boca Raton",
+          "state": "Florida",
+          "zip": "33434",
+          "country": "United States",
+          "geoPoint": { "lat": 26.35869, "lon": -80.0831 }
+        },
+        {
+          "facility": "Abcentra Investigational Site",
+          "status": "RECRUITING",
+          "city": "Boca Raton",
+          "state": "Florida",
+          "zip": "33434",
+          "country": "United States",
+          "geoPoint": { "lat": 26.35869, "lon": -80.0831 }
+        }
+      ]
+    }
+  },
+  "hasResults": false
+}
