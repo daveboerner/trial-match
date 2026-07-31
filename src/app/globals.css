@@ -57,13 +57,15 @@ body {
   flex: 1 1 240px;
 }
 
-.field select {
+.field select,
+.field input {
   padding: 0.5rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.95rem;
   color: var(--ink);
   background: white;
+  font-family: inherit;
 }
 
 .search-btn {
@@ -79,6 +81,16 @@ body {
 
 .search-btn:hover {
   background: #2559c4;
+}
+
+.search-btn:disabled {
+  background: #9db3e0;
+  cursor: not-allowed;
+}
+
+.results-error {
+  color: #b3261e;
+  font-size: 0.9rem;
 }
 
 .results-empty,

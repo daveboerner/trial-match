@@ -1,35 +1,62 @@
 'use client';
 
 import { useState } from 'react';
-import { MOCK_ACTIVE_PROBLEMS, MOCK_TRIALS_BY_CONDITION } from '@/lib/mock-data';
+import { MOCK_ACTIVE_PROBLEMS } from '@/lib/mock-data';
 import { TrialCard } from '@/components/TrialCard';
-import type { NormalizedTrial } from '@/types/trial';
+import type { NormalizedTrial, TrialSearchResponse } from '@/types/trial';
 
 const RADIUS_OPTIONS = [25, 50, 100, 250, 500];
 
-/** Mimics the backend's radius filter + nearest-location recompute (see src/lib/search-trials.ts, normalize.ts). */
-function filterByRadius(trials: NormalizedTrial[], radiusMiles: number): NormalizedTrial[] {
-  const filtered: NormalizedTrial[] = [];
-  for (const trial of trials) {
-    const inRange = trial.nearbyLocations.filter(
-      (loc) => typeof loc.distanceMiles !== 'number' || loc.distanceMiles <= radiusMiles
-    );
-    if (inRange.length === 0) continue;
-    filtered.push({ ...trial, nearbyLocations: inRange, nearestLocation: inRange[0] });
-  }
-  return filtered;
-}
+const ERROR_MESSAGES: Record<string, string> = {
+  validation_error: 'That search isn’t valid — check the zip code and radius.',
+  geocode_failed: 'Could not find that zip code. Double-check it and try again.',
+  trial_search_upstream_failed: 'ClinicalTrials.gov is temporarily unavailable. Try again in a moment.',
+  invalid_json: 'Something went wrong sending the search. Try again.',
+  internal_error: 'Something went wrong. Try again.',
+};
 
 export default function Home() {
   const [problemId, setProblemId] = useState(MOCK_ACTIVE_PROBLEMS[0].id);
+  const [zip, setZip] = useState('33140');
   const [radiusMiles, setRadiusMiles] = useState(100);
-  const [results, setResults] = useState<NormalizedTrial[] | null>(null);
+  const [status, setStatus] = useState<'idle' | 'loading' | 'error' | 'success'>('idle');
+  const [results, setResults] = useState<NormalizedTrial[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const selectedProblem = MOCK_ACTIVE_PROBLEMS.find((p) => p.id === problemId)!;
 
-  function handleSearch() {
-    const trials = MOCK_TRIALS_BY_CONDITION[selectedProblem.searchTerm] ?? [];
-    setResults(filterByRadius(trials, radiusMiles));
+  async function handleSearch() {
+    setStatus('loading');
+    setErrorMessage(null);
+
+    try {
+      const res = await fetch('/api/trial-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conditions: [selectedProblem.searchTerm],
+          zip,
+          radiusMiles,
+        }),
+      });
+
+      const body = await res.json();
+
+      if (!res.ok) {
+        setErrorMessage(body.message || ERROR_MESSAGES[body.error] || ERROR_MESSAGES.internal_error);
+        setStatus('error');
+        return;
+      }
+
+      const data = body as TrialSearchResponse;
+      setResults(data.trials);
+      setTotalCount(data.totalCount);
+      setStatus('success');
+    } catch {
+      setErrorMessage(ERROR_MESSAGES.internal_error);
+      setStatus('error');
+    }
   }
 
   return (
@@ -37,7 +64,9 @@ export default function Home() {
       <header className="page-header">
         <h1>Trial Match</h1>
         <p className="page-subtitle">
-          Phase 2 UI — running on static mock data, no live ClinicalTrials.gov call and no Vim SDK connection yet.
+          Phase 3 — live search against the real ClinicalTrials.gov v2 API. Active problem list is still mocked
+          (Phase 4 replaces it with the patient&rsquo;s real chart data via the Vim SDK); zip is a stand-in for the
+          patient&rsquo;s address until then.
         </p>
       </header>
 
@@ -54,6 +83,17 @@ export default function Home() {
         </label>
 
         <label className="field">
+          <span>Patient zip</span>
+          <input
+            type="text"
+            value={zip}
+            onChange={(e) => setZip(e.target.value)}
+            placeholder="33140"
+            maxLength={10}
+          />
+        </label>
+
+        <label className="field">
           <span>Radius</span>
           <select value={radiusMiles} onChange={(e) => setRadiusMiles(Number(e.target.value))}>
             {RADIUS_OPTIONS.map((r) => (
@@ -64,24 +104,29 @@ export default function Home() {
           </select>
         </label>
 
-        <button className="search-btn" onClick={handleSearch}>
-          Search trials
+        <button className="search-btn" onClick={handleSearch} disabled={status === 'loading'}>
+          {status === 'loading' ? 'Searching…' : 'Search trials'}
         </button>
       </section>
 
       <section className="results">
-        {results === null && (
-          <p className="results-empty">Select an active problem and radius, then run a search.</p>
+        {status === 'idle' && (
+          <p className="results-empty">Select an active problem, zip, and radius, then run a search.</p>
         )}
-        {results !== null && results.length === 0 && (
+        {status === 'loading' && <p className="results-empty">Searching ClinicalTrials.gov…</p>}
+        {status === 'error' && <p className="results-error">{errorMessage}</p>}
+        {status === 'success' && results.length === 0 && (
           <p className="results-empty">
             No recruiting trials found within {radiusMiles} miles for &ldquo;{selectedProblem.searchTerm}&rdquo;. Try
             expanding the radius.
           </p>
         )}
-        {results !== null && results.length > 0 && (
+        {status === 'success' && results.length > 0 && (
           <>
-            <p className="results-count">{results.length} matching trial{results.length > 1 ? 's' : ''}</p>
+            <p className="results-count">
+              {results.length} matching trial{results.length > 1 ? 's' : ''}
+              {totalCount > results.length && ` (of ${totalCount} total — narrow your search or expand radius for more)`}
+            </p>
             <div className="trial-grid">
               {results.map((trial) => (
                 <TrialCard key={trial.nctId} trial={trial} />
