@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { initVimSDK } from '@vimconnect/app-sdk';
 import { MOCK_ACTIVE_PROBLEMS, type ActiveProblem } from './mock-data';
+import { beginAuthorize, getStoredAccessToken } from './vim-auth-client';
 
 export type ChartStatus = 'standalone' | 'waiting-for-chart' | 'chart-ready';
 
@@ -28,27 +29,40 @@ const INITIAL_STATE: ChartContextState = {
 };
 
 /**
- * Connects to the Vim SDK and tracks chart_open events. Falls back to mock
- * data (INITIAL_STATE) when there's no Vim Hub to connect to — e.g. local
- * dev, or the app opened outside a chart context — rather than treating
- * that as a fatal error.
+ * Connects to the Vim SDK and tracks chart_open events. Three cases on mount:
+ *  - We already have a stored access token (from a completed authorize
+ *    round-trip) -> initVimSDK({ accessToken }) and subscribe for real.
+ *  - No token, but the URL has ?launch_id=... (Vim just opened us) -> kick
+ *    off the authorize redirect (src/lib/vim-auth-client.ts); this navigates
+ *    away, so nothing else here runs.
+ *  - Neither -> not launched by Vim at all (local dev) -> stay on the
+ *    mock/standalone default (INITIAL_STATE).
  */
 export function useChartContext(): ChartContextState {
   const [state, setState] = useState<ChartContextState>(INITIAL_STATE);
 
   useEffect(() => {
+    const accessToken = getStoredAccessToken();
+    const launchId = new URLSearchParams(window.location.search).get('launch_id');
+
+    if (!accessToken && launchId) {
+      beginAuthorize(launchId);
+      return;
+    }
+
+    if (!accessToken) {
+      return;
+    }
+
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
 
     (async () => {
       let sdk;
       try {
-        // Short handshake timeout: a plain browser tab (no Vim Hub parent
-        // frame) will never complete the handshake, so fail fast into the
-        // mock/standalone fallback instead of hanging on the default 10s.
-        sdk = await initVimSDK({ handshakeTimeout: 4000 });
+        sdk = await initVimSDK({ accessToken });
       } catch (err) {
-        console.warn('[trial-match] Vim SDK not connected — using mock patient data:', err);
+        console.warn('[trial-match] Vim SDK failed to connect with stored access token:', err);
         return;
       }
       if (cancelled) return;
