@@ -331,21 +331,42 @@ with a `window.location.origin` fallback for building URLs
 `/api/auth/token` alias — worth knowing if a future registration ever
 needs the literal default path instead of a custom one like ours.
 
-- **Bug found and fixed 2026-08-04, first real-chart test:** the
-  authorize redirect failed with `{"error":"Invalid or expired launch
-  ID"}` — confirmed NOT a timing issue (gap was milliseconds, not
-  seconds) and NOT a manifest/`redirect_uri` issue (that produces a
-  different error class). Root cause, found by diffing against
-  vim-demo-app: our `useChartContext()` effect had no guard against
-  running more than once, so `beginAuthorize()` could fire twice with the
-  *same* `launch_id` — Vim's authorize endpoint treats it as single-use,
-  so the second attempt gets rejected even though nothing was actually
-  wrong with the ID. vim-demo-app's `/launch` page guards this exact
-  thing with a `useRef` and the comment "Prevent duplicate redirects
-  (React StrictMode runs effects twice)". Added the same `startedRef`
-  guard to both `use-chart-context.ts` and `auth/callback/page.tsx`. Not
-  yet re-verified inside the sandbox chart as of this note — that's the
-  immediate next test.
+- **`{"error":"Invalid or expired launch ID"}` — hit twice, two different
+  causes, both real. Don't assume it's fixed just because the error looks
+  identical to before; check which of these actually applies.**
+  1. First real-chart test, 2026-08-04: confirmed NOT a timing issue (gap
+     was milliseconds) and NOT a manifest/`redirect_uri` issue (different
+     error class). Root cause, found by diffing against vim-demo-app: our
+     `useChartContext()` effect had no guard against running more than
+     once, so `beginAuthorize()` could fire twice with the *same*
+     `launch_id` — Vim's authorize endpoint treats it as single-use, so a
+     second attempt gets rejected even though nothing was wrong with the
+     ID. vim-demo-app's `/launch` page guards this exact thing with a
+     `useRef` ("Prevent duplicate redirects — React StrictMode runs
+     effects twice"). Added the same `startedRef` guard to both
+     `use-chart-context.ts` and `auth/callback/page.tsx` — this is a
+     real, legitimate fix, keep it, but **it was not the cause of the
+     second occurrence below.**
+  2. Same error persisted after that fix. Re-tested with DevTools
+     "Preserve log" enabled specifically to rule the double-fire theory
+     in or out definitively — confirmed genuinely **one** `launches`
+     call, **one** `?launch_id=...` page load, **one** `authorize` call.
+     No duplication at all. Actual cause: checked the `launches`
+     request's `:authority` request header — `api.stage.getvim.ai`. The
+     sandbox (`sandbox-ehr.stage.getvim.ai`) issues `launch_id`s via
+     Vim's **staging** backend, but `VIM_BACKEND_URL` /
+     `NEXT_PUBLIC_VIM_BACKEND_URL` were both set to **production**
+     (`api.getvim.ai`) — production has no record of a staging-issued
+     `launch_id`, so it correctly rejects it as invalid. Fixed by
+     pointing both env vars at `https://api.stage.getvim.ai` (`.env.local`,
+     Vercel env vars — see `.env.example` for the updated default/comment).
+     **This isn't environment-aware** — if this app is ever tested against
+     a *production* EHR, these need to be flipped back (or, better, made
+     to switch automatically based on hostname/config the way
+     vim-demo-app's `getEnvironment()`/`getVimBackendUrl()` do — see the
+     reference-repo note above). Don't relitigate the double-invoke fix
+     if this error resurfaces — check the backend-URL/environment match
+     *first*, it's the more likely culprit of the two now.
 
 **2. `chart_open`'s `entities.patient` is real inline data, not a bare
 reference.** Confirmed from `ChartOpenEventSchema` / the shared `Patient`
