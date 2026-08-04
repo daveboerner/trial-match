@@ -63,14 +63,24 @@ export function useChartContext(): ChartContextState {
     if (startedRef.current) return;
     startedRef.current = true;
 
-    const accessToken = getStoredAccessToken();
     const launchId = new URLSearchParams(window.location.search).get('launch_id');
 
-    if (!accessToken && launchId) {
+    // A launch_id in the URL means Vim just opened us for a fresh launch —
+    // always re-authorize for it, even if we already have a stored access
+    // token from a previous launch. Access tokens are scoped to the launch
+    // they were issued for; reusing an old one against a new launch_id gets
+    // rejected by Vim's Hub as "Launch ID mismatch" (hit this for real
+    // 2026-08-04 — re-opening the panel/switching charts generates a new
+    // launch_id, and the previous session's cached token doesn't match it).
+    if (launchId) {
       beginAuthorize(launchId);
       return;
     }
 
+    // No launch_id — either a stored token from completing the authorize
+    // round-trip moments ago (the common case, landing back on bare `/`
+    // after auth/callback), or truly no Vim context at all (local dev).
+    const accessToken = getStoredAccessToken();
     if (!accessToken) {
       return;
     }
