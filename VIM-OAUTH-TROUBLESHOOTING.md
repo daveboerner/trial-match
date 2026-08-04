@@ -1,11 +1,21 @@
-# Vim Connect OAuth — redirect_uri rejection (blocked, needs Vim engineering)
+# Vim Connect OAuth — redirect_uri rejection (RESOLVED — was appId/client_id confusion)
 
-**Status as of 2026-08-04: blocked.** We've exhausted client-side troubleshooting
-and diffed our implementation against Vim's own reference app with no
-discrepancy found. This needs someone with server-side access to Vim's
-auth service to look at.
+**Resolved 2026-08-04.** Root cause: everything below used
+`305d7d2a-7f7b-45ae-83db-75c70071d75b` as the OAuth `client_id`. That
+value is actually the app's **appId** — a different identifier, visible
+in the same console UI, easy to grab by mistake. The real `client_id`
+is `vim_bd726f3119d1041971c7d7364baee74f`. Sending the appId as
+`client_id` in `/app-auth/authorize` meant Vim's auth service was
+correctly rejecting the redirect_uri — it was checking a "client" (the
+misread appId) that was never configured with our redirect_uri at all,
+regardless of how exactly our real app's Allowed URLs matched.
+**Kept the rest of this doc as-written below for the debugging
+narrative** (the other three bugs it documents — SDK auto-token-resolve,
+double-invoke, staging/prod backend mismatch — were all real and
+independent of this one), but nothing further is needed from Vim
+engineering on the redirect_uri question specifically.
 
-## One-line summary
+## One-line summary (original, now resolved)
 
 The OAuth authorize step for our registered app fails with
 `{"error":"redirect_uri not authorized for this client"}`, even though the
@@ -15,8 +25,10 @@ app's registered Allowed URLs.
 ## App / environment details
 
 - App name: Trial Match
-- `client_id`: `305d7d2a-7f7b-45ae-83db-75c70071d75b`
+- `client_id` used at the time (WRONG — this is actually the appId): `305d7d2a-7f7b-45ae-83db-75c70071d75b`
+- **Correct `client_id`: `vim_bd726f3119d1041971c7d7364baee74f`**
 - Registered at: `console.stage.getvim.ai/build/apps/305d7d2a-7f7b-45ae-83db-75c70071d75b`
+  (that URL segment is the appId — correct, distinct from client_id)
 - Testing against: `sandbox-ehr.stage.getvim.ai` (staging sandbox)
 - Vim backend in use: `https://api.stage.getvim.ai`
 - App hosting: `https://trial-match-davesboerner-7206s-projects.vercel.app` (public)
@@ -123,7 +135,10 @@ Response: `400 Bad Request`
 {"error":"redirect_uri not authorized for this client"}
 ```
 
-## What we need Vim engineering to confirm
+## What we needed Vim engineering to confirm (superseded — no longer needed)
+
+The questions below were the original ask before the appId/client_id mix-up
+was found. Keeping them for the record; nothing further is needed here.
 
 1. For `client_id` `305d7d2a-7f7b-45ae-83db-75c70071d75b`, what
    `redirect_uri`(s) does the **auth service itself** actually have on

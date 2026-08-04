@@ -10,16 +10,29 @@ making changes. Update it when a phase completes or a decision changes.
 
 ## Current status
 
-**Phases 1 through 3 are done. Phase 4 is registered and deployed, but
-auth is not yet confirmed working end-to-end.** Registration was
-submitted and the app loads correctly inside a real sandbox chart
-(`sandbox-ehr.stage.getvim.ai`) — but the *first* real-chart test
-(2026-08-03) surfaced that the client-side auth model documented earlier
-was wrong: the SDK does not auto-resolve a token on its own, our app has
-to actively redirect through Vim's `/app-auth/authorize` first. That's
-now implemented (2026-08-04, see Phase 4 / "Vim SDK reference §1" notes)
-and typechecks, but **has not yet been re-tested inside the sandbox
-chart**. That's the immediate next step, before anything else.
+**Phases 1 through 3 are done. Phase 4's code is believed correct now,
+but has never actually completed the OAuth flow end-to-end — retest is
+the immediate next step.** Getting here took several real, distinct bugs
+across 2026-08-03 → 2026-08-04, in order: (1) the SDK does not
+auto-resolve a token — we have to actively drive the `/app-auth/authorize`
+redirect ourselves (implemented); (2) a double-fired redirect could
+invalidate a `launch_id` by using it twice (fixed with a `useRef` guard,
+worth keeping regardless); (3) `VIM_BACKEND_URL` was pointed at
+production while testing against the staging sandbox, so a
+staging-issued `launch_id` was rejected by production (fixed — now
+staging); (4) **the big one** — every env var and every doc reference to
+"client_id" was actually the app's **appId** (`305d7d2a-7f7b-45ae-83db-75c70071d75b`).
+The real `client_id` is `vim_bd726f3119d1041971c7d7364baee74f`. This is
+almost certainly why the `redirect_uri not authorized for this client`
+investigation (see `VIM-OAUTH-TROUBLESHOOTING.md` — now stale, kept for
+the debugging narrative but superseded by this finding) went nowhere
+despite a confirmed exact-match redirect_uri: we were asking Vim's auth
+service about the wrong client entirely. All four fixes are applied and
+typechecked as of this note; **none of it has been re-verified against a
+real chart yet** — that's the next test, and if it fails again, don't
+assume it's a fifth new bug before checking these four are actually all
+correctly deployed (correct client_id, correct backend URL, the
+double-invoke guard, the authorize-redirect flow itself).
 
 | Phase | What | Status |
 |---|---|---|
@@ -27,7 +40,7 @@ chart**. That's the immediate next step, before anything else.
 | 1.5 | Live smoke test against real network | ✅ Done 2026-07-31 — see results below |
 | 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
 | 3 | Wire real Phase 1 API into Phase 2 UI | ✅ Done 2026-07-31 — see Phase 3 notes below |
-| 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration, auth flow | 🟡 Registered + deployed; authorize-redirect flow just rewritten (2026-08-04) — **retest inside the sandbox chart next, this has not been confirmed working yet** |
+| 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration, auth flow | 🟡 Four real bugs found and fixed (2026-08-03/04, see above) — **retest inside the sandbox chart next, this has never actually succeeded end-to-end yet** |
 | 5 | Encounter writeback (Tier 1) | ⬜ Not started |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
 
@@ -178,8 +191,23 @@ a live encounter in context to test against at all.
   explicit choice (not the default recommendation, which was private —
   noting this so a future session doesn't "fix" it back to private
   without asking first).
-- **Vim client_id:** `305d7d2a-7f7b-45ae-83db-75c70071d75b` — real value,
-  in `.env.local` (gitignored) as both `VIM_CLIENT_ID` (server-only, used
+- **Vim client_id — corrected 2026-08-04, this was a real, multi-day bug:**
+  the actual OAuth `client_id` is `vim_bd726f3119d1041971c7d7364baee74f`.
+  `305d7d2a-7f7b-45ae-83db-75c70071d75b` (used everywhere before this
+  correction, including in commit history and the now-stale
+  `VIM-OAUTH-TROUBLESHOOTING.md`) is the app's **appId** — a different
+  identifier, shown in the same console UI, easy to grab by mistake since
+  nothing in the console visually distinguishes which field is which at a
+  glance. **`appId` is not `client_id`.** Sending the appId as `client_id`
+  in the `/app-auth/authorize` call is why the entire multi-day
+  `redirect_uri not authorized for this client` investigation went
+  nowhere — Vim's auth service was correctly rejecting it: that "client"
+  (the appId, misread as a client_id) was never configured with our
+  redirect_uri, no matter how exactly the real app's Allowed URLs matched.
+  If a future session sees any client_id-shaped value starting with a
+  bare UUID (no `vim_` prefix) anywhere in this OAuth flow, **stop and
+  double check it's not the appId again.**
+  In `.env.local` (gitignored) as both `VIM_CLIENT_ID` (server-only, used
   by `/api/auth/token`) and `NEXT_PUBLIC_VIM_CLIENT_ID` (client-exposed,
   added 2026-08-04 — needed by `src/lib/vim-auth-client.ts` to build the
   authorize redirect URL browser-side). **Both need to be set as Vercel
