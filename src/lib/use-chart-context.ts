@@ -28,6 +28,16 @@ const INITIAL_STATE: ChartContextState = {
   zip: null,
 };
 
+// initVimSDK() loads a core-sdk script that defaults to PRODUCTION
+// (core-sdk.getvim.ai) regardless of our own VIM_BACKEND_URL — that only
+// controls where WE send our own authorize/token calls, not which
+// environment the SDK itself validates access tokens against. A
+// staging-issued token handed to production's core-sdk fails with
+// "Access token validation failed". `__overrideEnv` is an internal,
+// undocumented SDKInitOptions field (confirmed via the vim-demo-app
+// reference, which does exactly this) — not in the public type, hence the cast.
+const IS_STAGING_BACKEND = (process.env.NEXT_PUBLIC_VIM_BACKEND_URL ?? '').includes('stage');
+
 /**
  * Connects to the Vim SDK and tracks chart_open events. Three cases on mount:
  *  - We already have a stored access token (from a completed authorize
@@ -71,7 +81,10 @@ export function useChartContext(): ChartContextState {
     (async () => {
       let sdk;
       try {
-        sdk = await initVimSDK({ accessToken });
+        sdk = await initVimSDK({
+          accessToken,
+          ...(IS_STAGING_BACKEND ? { __overrideEnv: 'staging' } : {}),
+        } as Parameters<typeof initVimSDK>[0] & { __overrideEnv?: 'staging' });
       } catch (err) {
         console.warn('[trial-match] Vim SDK failed to connect with stored access token:', err);
         return;
