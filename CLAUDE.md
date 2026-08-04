@@ -319,10 +319,33 @@ CDN) and waits for a postMessage handshake — that part of the earlier
 notes was accurate and unaffected by this correction. `sdk.sessionContext.getIdToken()`
 is a *different* thing — an OIDC ID token for SSO-ing the Vim-logged-in
 user into *our own* backend, not part of this flow.
-- **Not yet verified end-to-end**: this was implemented and typechecked,
-  then pushed, but hadn't been re-tested inside the real sandbox chart as
-  of this note. Next session/next test: does the full redirect round-trip
-  actually land back in `chart-ready` state with real problems/zip?
+
+**Reference implementation:** https://github.com/vimconnect/vim-demo-app
+exists and is worth diffing against *before* re-guessing at SDK/auth
+behavior next time — it's what caught the bug below, faster than another
+round of doc-fetching would have. It uses dedicated `/launch` and `/app`
+routes (not root `/` doing double duty like ours), reads `NEXT_PUBLIC_APP_URL`
+with a `window.location.origin` fallback for building URLs
+(`src/lib/sdk-config.ts`), and serves the token-exchange route at both
+`/token` (its stated *default* path "the SDK posts to") and a legacy
+`/api/auth/token` alias — worth knowing if a future registration ever
+needs the literal default path instead of a custom one like ours.
+
+- **Bug found and fixed 2026-08-04, first real-chart test:** the
+  authorize redirect failed with `{"error":"Invalid or expired launch
+  ID"}` — confirmed NOT a timing issue (gap was milliseconds, not
+  seconds) and NOT a manifest/`redirect_uri` issue (that produces a
+  different error class). Root cause, found by diffing against
+  vim-demo-app: our `useChartContext()` effect had no guard against
+  running more than once, so `beginAuthorize()` could fire twice with the
+  *same* `launch_id` — Vim's authorize endpoint treats it as single-use,
+  so the second attempt gets rejected even though nothing was actually
+  wrong with the ID. vim-demo-app's `/launch` page guards this exact
+  thing with a `useRef` and the comment "Prevent duplicate redirects
+  (React StrictMode runs effects twice)". Added the same `startedRef`
+  guard to both `use-chart-context.ts` and `auth/callback/page.tsx`. Not
+  yet re-verified inside the sandbox chart as of this note — that's the
+  immediate next test.
 
 **2. `chart_open`'s `entities.patient` is real inline data, not a bare
 reference.** Confirmed from `ChartOpenEventSchema` / the shared `Patient`
