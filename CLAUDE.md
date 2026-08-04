@@ -10,15 +10,16 @@ making changes. Update it when a phase completes or a decision changes.
 
 ## Current status
 
-**Phases 1 through 3 are done; Phase 4 code + infra are done, Vim-side
-registration is the last open step.** The app is public at
-`https://trial-match-davesboerner-7206s-projects.vercel.app`, deployed
-from a public GitHub repo, with a working, verified token-exchange
-endpoint (`/api/auth/token` correctly configured — see Phase 4 notes for
-what "verified" means here without a real Vim launch yet). What's left
-is submitting Vim's app-registration form with the values in Phase 4
-notes, and then testing against a real sandboxed chart. That's the
-prerequisite for ever seeing `chart-ready` state for real.
+**Phases 1 through 3 are done. Phase 4 is registered and deployed, but
+auth is not yet confirmed working end-to-end.** Registration was
+submitted and the app loads correctly inside a real sandbox chart
+(`sandbox-ehr.stage.getvim.ai`) — but the *first* real-chart test
+(2026-08-03) surfaced that the client-side auth model documented earlier
+was wrong: the SDK does not auto-resolve a token on its own, our app has
+to actively redirect through Vim's `/app-auth/authorize` first. That's
+now implemented (2026-08-04, see Phase 4 / "Vim SDK reference §1" notes)
+and typechecks, but **has not yet been re-tested inside the sandbox
+chart**. That's the immediate next step, before anything else.
 
 | Phase | What | Status |
 |---|---|---|
@@ -26,7 +27,7 @@ prerequisite for ever seeing `chart-ready` state for real.
 | 1.5 | Live smoke test against real network | ✅ Done 2026-07-31 — see results below |
 | 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
 | 3 | Wire real Phase 1 API into Phase 2 UI | ✅ Done 2026-07-31 — see Phase 3 notes below |
-| 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration | 🟡 Code + infra done 2026-07-31 — **submit the Vim app-registration form next, then test against a real chart** |
+| 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration, auth flow | 🟡 Registered + deployed; authorize-redirect flow just rewritten (2026-08-04) — **retest inside the sandbox chart next, this has not been confirmed working yet** |
 | 5 | Encounter writeback (Tier 1) | ⬜ Not started |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
 
@@ -178,8 +179,13 @@ a live encounter in context to test against at all.
   noting this so a future session doesn't "fix" it back to private
   without asking first).
 - **Vim client_id:** `305d7d2a-7f7b-45ae-83db-75c70071d75b` — real value,
-  in `.env.local` (gitignored) and set as a Vercel Production env var.
-  `.env.example` documents the required var names (no real values).
+  in `.env.local` (gitignored) as both `VIM_CLIENT_ID` (server-only, used
+  by `/api/auth/token`) and `NEXT_PUBLIC_VIM_CLIENT_ID` (client-exposed,
+  added 2026-08-04 — needed by `src/lib/vim-auth-client.ts` to build the
+  authorize redirect URL browser-side). **Both need to be set as Vercel
+  env vars, and `NEXT_PUBLIC_` ones specifically require a fresh
+  deployment to take effect (inlined at build time).** `.env.example`
+  documents all required var names (no real values).
 - **Vim client_secret:** issued and configured 2026-07-31 — in
   `.env.local` and as a Vercel env var. **Gotcha hit during setup:**
   adding a Vercel env var does not retroactively apply to an
@@ -247,37 +253,76 @@ Docs: https://developer-docs.getvim.ai/docs/ — this is the **new** SDK,
 distinct from the legacy `docs.getvim.com` VimOS.js docs. Don't mix the two
 APIs up if searching for reference material.
 
-**1. Auth needs a real server-side route, but not a redirect flow we
-build ourselves.** **Corrected again 2026-07-31** — an earlier version of
-this note said "no route to implement," which was wrong; app registration
-surfaced that Vim's Hub does need our app to host a token endpoint. What's
-still true: we don't build the authorize-redirect step (Vim's Hub handles
-that on its side before ever loading our page). What we *do* build:
-`POST /api/auth/token` (see `src/app/api/auth/token/route.ts` and the
-"App registration" notes above) — Vim's Hub calls our registered Token
-Endpoint URL (via the browser, POSTing `{code}`), and our server
-exchanges that code for a token by calling
-`{VIM_BACKEND_URL}/app-auth/token` server-side with our client_id +
-client_secret (confirmed against developer-docs.getvim.ai/docs/authentication).
-Client-side, `initVimSDK(options?)` still handles the browser half: if
-you don't pass `accessToken`, it looks for a `token_endpoint` query param
-on the page URL (which Vim's Hub appends, pointing at our registered
-endpoint) and fetches from it itself — we don't write that client-side
-fetch. Mechanically, `initVimSDK()` injects a `<script>` tag that loads
-`https://core-sdk.getvim.ai/index.js` (a **real network call to Vim's own
-CDN** — this happens even from a plain local-dev browser tab with no Vim
-context) and then waits for a postMessage handshake, presumably from a
-parent frame when actually embedded in Vim's Hub. Outside that context,
-it just times out — there's no separate extension-detection step that
-fails fast, which is why `use-chart-context.ts` passes a short
-`handshakeTimeout` (4000ms) rather than eating the 10s default on every
-local dev page load. `sdk.sessionContext.getIdToken()` is a *different*
-thing — an OIDC ID token for SSO-ing the Vim-logged-in user into *our
-own* backend, not part of app-launch auth.
-- Still to confirm against a real Vim Hub launch (once registration is
-  live): the exact `token_endpoint` query-param convention, and that our
-  `/api/auth/token` route's request/response shapes match what the Hub
-  actually sends/expects.
+**1. Auth: the app must actively initiate the authorize redirect.**
+**Corrected a third time, 2026-08-04, and this version is the one that's
+actually been implemented and typechecked (not yet chart-verified) —
+stop here if you're tempted to "simplify" this again without re-reading
+it.** Two earlier versions of this note were wrong in opposite
+directions: one said no server-side route was needed at all (wrong — app
+registration requires one); the next said the *browser* SDK
+auto-resolves a token via some `token_endpoint` query-param convention on
+its own (also wrong — this was inferred from `SDKInitOptions`'s doc
+comment and never actually verified, and it produced the real runtime
+error below). The doc comment on `accessToken` in the SDK's own
+`.d.ts` — "if omitted, the SDK will look for a token_endpoint query param
+in the page URL" — describes a mechanism that, empirically, does not
+resolve a token on its own. Confirmed by testing inside a real Vim
+sandbox chart (`sandbox-ehr.stage.getvim.ai`) with app registration and
+both env vars fully configured: `initVimSDK()` called with no
+`accessToken` threw `SDKError: Failed to resolve access token: either
+pass accessToken directly to init(), or configure a token_endpoint in
+your app manifest` — every time, regardless of registration state.
+
+The actual flow, confirmed against developer-docs.getvim.ai/docs/authentication
+with a targeted fetch (the first fetch pass on this page missed the
+authorize-initiation step entirely — ask a more specific question next
+time a docs page seems to be missing something, don't assume it isn't
+there):
+1. Vim's Hub opens our **Launch Endpoint** with `?launch_id=...` (query
+   param name confirmed as `launch_id`, doc's "Step 1: Handle the
+   Launch").
+2. **We** (not Vim, not the SDK) redirect the browser to `GET
+   {VIM_BACKEND_URL}/app-auth/authorize` with `response_type=code`,
+   `client_id`, `launch={launch_id}`, `scope=launch openid`,
+   `redirect_uri`, and a CSRF-protected `state` (format
+   `{launchId}:{csrfToken}` — we generate the csrfToken and stash it in
+   `sessionStorage` before redirecting, since there's nowhere else to
+   keep it across the navigation). See `src/lib/vim-auth-client.ts`.
+3. Vim redirects back to our **`redirect_uri`** — confirmed to be
+   *distinct* from Launch Endpoint, but there is **no separate
+   redirect_uri field in app registration**; Dave confirmed (2026-08-04)
+   it's validated against **Allowed URLs** at the origin level. We
+   registered `src/app/auth/callback/page.tsx` as this path
+   (`<origin>/auth/callback`), same origin as everything else, so no
+   extra registration was needed beyond what's already in Allowed URLs.
+4. The callback page validates `state` against the stashed
+   `sessionStorage` value, then POSTs `{code}` to our own
+   `/api/auth/token` (unchanged from before — this part was always
+   right: server-side exchange with `{VIM_BACKEND_URL}/app-auth/token`
+   using client_id + client_secret, never exposed to the browser).
+5. We store the resulting `access_token` (`sessionStorage`) and call
+   `initVimSDK({ accessToken })` **explicitly** — see
+   `use-chart-context.ts`. This is the only thing that actually connects
+   the SDK; there is no scenario in which omitting `accessToken` works.
+
+This needs **two new client-exposed env vars** (`NEXT_PUBLIC_VIM_CLIENT_ID`,
+`NEXT_PUBLIC_VIM_BACKEND_URL` — same values as their server-only
+counterparts, just also readable in the browser bundle since building
+the authorize URL happens client-side). `client_id` isn't secret, so this
+is fine; the secret never gets a `NEXT_PUBLIC_` var. **`NEXT_PUBLIC_`
+vars are inlined at build time** — same "must actually redeploy, not
+just add the var" gotcha as before applies here too.
+
+Mechanically, `initVimSDK()` still injects a `<script>` tag that loads
+`https://core-sdk.getvim.ai/index.js` (a real network call to Vim's own
+CDN) and waits for a postMessage handshake — that part of the earlier
+notes was accurate and unaffected by this correction. `sdk.sessionContext.getIdToken()`
+is a *different* thing — an OIDC ID token for SSO-ing the Vim-logged-in
+user into *our own* backend, not part of this flow.
+- **Not yet verified end-to-end**: this was implemented and typechecked,
+  then pushed, but hadn't been re-tested inside the real sandbox chart as
+  of this note. Next session/next test: does the full redirect round-trip
+  actually land back in `chart-ready` state with real problems/zip?
 
 **2. `chart_open`'s `entities.patient` is real inline data, not a bare
 reference.** Confirmed from `ChartOpenEventSchema` / the shared `Patient`
