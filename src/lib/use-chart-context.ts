@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { initVimSDK } from '@vimconnect/app-sdk';
 import { MOCK_ACTIVE_PROBLEMS, type ActiveProblem } from './mock-data';
 import { beginAuthorize, getStoredAccessToken } from './vim-auth-client';
@@ -40,8 +40,19 @@ const INITIAL_STATE: ChartContextState = {
  */
 export function useChartContext(): ChartContextState {
   const [state, setState] = useState<ChartContextState>(INITIAL_STATE);
+  // Guards against the effect running more than once for the same mount
+  // (React can double-invoke effects). Without this, beginAuthorize() would
+  // fire twice with the same launch_id — Vim's authorize endpoint treats a
+  // launch_id as single-use, so the second attempt gets rejected as
+  // "invalid or expired launch ID" even though nothing was actually wrong
+  // with it. Confirmed against the reference vim-demo-app, which guards the
+  // same way for the same stated reason.
+  const startedRef = useRef(false);
 
   useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+
     const accessToken = getStoredAccessToken();
     const launchId = new URLSearchParams(window.location.search).get('launch_id');
 

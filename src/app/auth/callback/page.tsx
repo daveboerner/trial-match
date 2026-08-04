@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { validateState, storeAccessToken } from '@/lib/vim-auth-client';
 
 /**
@@ -10,8 +10,16 @@ import { validateState, storeAccessToken } from '@/lib/vim-auth-client';
  */
 export default function AuthCallbackPage() {
   const [error, setError] = useState<string | null>(null);
+  // Same double-invoke guard as use-chart-context.ts — a second run would
+  // find the CSRF value already removed from sessionStorage by the first
+  // (validateState() deletes it on read) and fail anyway, but this also
+  // stops us from POSTing the same auth code twice.
+  const startedRef = useRef(false);
 
   useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+
     const params = new URLSearchParams(window.location.search);
     const code = params.get('code');
     const launchId = validateState(params.get('state'));
