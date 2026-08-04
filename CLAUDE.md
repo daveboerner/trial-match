@@ -10,29 +10,33 @@ making changes. Update it when a phase completes or a decision changes.
 
 ## Current status
 
-**Phases 1 through 3 are done. Phase 4's code is believed correct now,
-but has never actually completed the OAuth flow end-to-end — retest is
-the immediate next step.** Getting here took several real, distinct bugs
-across 2026-08-03 → 2026-08-04, in order: (1) the SDK does not
-auto-resolve a token — we have to actively drive the `/app-auth/authorize`
-redirect ourselves (implemented); (2) a double-fired redirect could
-invalidate a `launch_id` by using it twice (fixed with a `useRef` guard,
-worth keeping regardless); (3) `VIM_BACKEND_URL` was pointed at
-production while testing against the staging sandbox, so a
-staging-issued `launch_id` was rejected by production (fixed — now
-staging); (4) **the big one** — every env var and every doc reference to
-"client_id" was actually the app's **appId** (`305d7d2a-7f7b-45ae-83db-75c70071d75b`).
-The real `client_id` is `vim_bd726f3119d1041971c7d7364baee74f`. This is
-almost certainly why the `redirect_uri not authorized for this client`
-investigation (see `VIM-OAUTH-TROUBLESHOOTING.md` — now stale, kept for
-the debugging narrative but superseded by this finding) went nowhere
-despite a confirmed exact-match redirect_uri: we were asking Vim's auth
-service about the wrong client entirely. All four fixes are applied and
-typechecked as of this note; **none of it has been re-verified against a
-real chart yet** — that's the next test, and if it fails again, don't
-assume it's a fifth new bug before checking these four are actually all
-correctly deployed (correct client_id, correct backend URL, the
-double-invoke guard, the authorize-redirect flow itself).
+**Phases 1 through 3 are done. Phase 4's OAuth flow now works completely
+end-to-end (real fresh access token obtained, confirmed correct
+client_id/launch_id/redirect_uri) — but handing that token to
+`initVimSDK()` fails inside Vim's own Chrome extension, not our code.
+Currently blocked on Vim engineering.** Getting the OAuth half working
+took four real, distinct bugs across 2026-08-03 → 2026-08-04: (1) the SDK
+does not auto-resolve a token — we drive the `/app-auth/authorize`
+redirect ourselves; (2) a double-fired redirect could invalidate a
+`launch_id` by using it twice (fixed with a `useRef` guard); (3)
+`VIM_BACKEND_URL` was pointed at production while testing against the
+staging sandbox (fixed — now staging); (4) every env var and doc
+reference to "client_id" was actually the app's **appId**
+(`305d7d2a-7f7b-45ae-83db-75c70071d75b`) — the real `client_id` is
+`vim_bd726f3119d1041971c7d7364baee74f` (see `VIM-OAUTH-TROUBLESHOOTING.md`,
+now resolved/stale, kept for the debugging narrative). **Current blocker,
+2026-08-04, see `VIM-SDK-BRIDGE-TROUBLESHOOTING.md`:** with a confirmed
+valid, correctly-scoped access token in hand, `initVimSDK({ accessToken })`
+fails with `SDKError: SDK bridge initialization failed` — this happens
+inside the dynamically-loaded `core-sdk.getvim.ai` script's own
+postMessage handshake with the Chrome extension, not in our code or in
+`@vimconnect/app-sdk`'s package (confirmed by grepping both — no match).
+Tried and ruled out: the `__overrideEnv: 'staging'` override made zero
+difference either way (added, tested, removed, tested — identical
+error both times); no CSP/frame headers on our side that could
+interfere. **This needs Vim engineering to check extension/server-side
+logs** — see the troubleshooting doc's specific questions before
+attempting further client-side fixes for this particular error.
 
 | Phase | What | Status |
 |---|---|---|
@@ -40,7 +44,7 @@ double-invoke guard, the authorize-redirect flow itself).
 | 1.5 | Live smoke test against real network | ✅ Done 2026-07-31 — see results below |
 | 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
 | 3 | Wire real Phase 1 API into Phase 2 UI | ✅ Done 2026-07-31 — see Phase 3 notes below |
-| 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration, auth flow | 🟡 Four real bugs found and fixed (2026-08-03/04, see above) — **retest inside the sandbox chart next, this has never actually succeeded end-to-end yet** |
+| 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration, auth flow | 🔴 OAuth flow fully working (2026-08-04); blocked on `SDK bridge initialization failed` inside Vim's extension — **needs Vim engineering, see `VIM-SDK-BRIDGE-TROUBLESHOOTING.md`** |
 | 5 | Encounter writeback (Tier 1) | ⬜ Not started |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
 
