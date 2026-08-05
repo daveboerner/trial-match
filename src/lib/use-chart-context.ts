@@ -98,10 +98,30 @@ export function useChartContext(): ChartContextState {
       }
       if (cancelled) return;
 
+      // Tells the Hub we're actually ready — without this it shows a "May
+      // not be ready" status even once the SDK has genuinely connected
+      // (confirmed 2026-08-05: this exact symptom, in the real sandbox).
+      // Part of the official quick-start guide's Step 5, which we'd missed.
+      sdk.hub.setActivationStatus('ENABLED');
+
       setState({ status: 'waiting-for-chart', problems: [], zip: null });
 
-      unsubscribe = sdk.ehr.workflow.on('chart_open', (event) => {
-        const patient = event.entities.patient;
+      // context.onChange, not workflow.on('chart_open', ...) — workflow events
+      // are one-shot triggers that only fire on the *next* open transition, so
+      // if a patient was already in context before our multi-step OAuth
+      // redirect finished, we'd miss that one-time event and get stuck in
+      // 'waiting-for-chart' forever (hit this for real 2026-08-05). context
+      // subscriptions sync with the *current* state immediately on
+      // subscribing, matching the official quick-start guide's own pattern.
+      // Note the different shape: data arrives as { fields: Partial<Patient> },
+      // not the patient object directly like the workflow event gave us.
+      unsubscribe = sdk.ehr.context.onChange('chart_open:patient', (prev, curr) => {
+        if (!curr) {
+          setState({ status: 'waiting-for-chart', problems: [], zip: null });
+          return;
+        }
+
+        const patient = curr.fields;
         const problems: ActiveProblem[] = (patient.problems ?? [])
           .filter((p) => p.description && isActiveStatus(p.status))
           .map((p, i) => ({
