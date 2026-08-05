@@ -34,9 +34,26 @@ postMessage handshake with the Chrome extension, not in our code or in
 Tried and ruled out: the `__overrideEnv: 'staging'` override made zero
 difference either way (added, tested, removed, tested — identical
 error both times); no CSP/frame headers on our side that could
-interfere. **This needs Vim engineering to check extension/server-side
-logs** — see the troubleshooting doc's specific questions before
-attempting further client-side fixes for this particular error.
+interfere. **2026-08-05 update — this is now confirmed intermittent, not
+deterministic:** declaring EHR capabilities in the app registration's
+EHR tab (previously empty) got the bridge to connect successfully once
+(patient in context, panel correctly reached `waiting-for-chart`,
+proving `initVimSDK()` had resolved) — but a subsequent fresh-launch
+retest, with the *same* registration/capabilities (re-verified still
+checked), failed with the identical `SDK bridge initialization failed`
+error again. Also fixed two follow-on issues discovered during that one
+successful connection (both in `use-chart-context.ts`, both real, keep
+them regardless of the bridge issue): switched
+`workflow.on('chart_open', ...)` → `context.onChange('chart_open:patient', ...)`
+(a workflow subscription set up after the patient's already in context
+permanently misses that one-shot event) and added
+`sdk.hub.setActivationStatus('ENABLED')` (missing before; caused the Hub
+to show "May not be ready" even once genuinely connected). **Neither of
+those two fixes can explain the bridge itself failing again** — they
+only run after `initVimSDK()` already resolves. This needs Vim
+engineering to check why the *same* configuration succeeds and fails
+across different attempts — see `VIM-SDK-BRIDGE-TROUBLESHOOTING.md`'s
+"Update 2026-08-05" section before attempting further client-side fixes.
 
 | Phase | What | Status |
 |---|---|---|
