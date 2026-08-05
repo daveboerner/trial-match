@@ -50,10 +50,23 @@ permanently misses that one-shot event) and added
 `sdk.hub.setActivationStatus('ENABLED')` (missing before; caused the Hub
 to show "May not be ready" even once genuinely connected). **Neither of
 those two fixes can explain the bridge itself failing again** — they
-only run after `initVimSDK()` already resolves. This needs Vim
-engineering to check why the *same* configuration succeeds and fails
-across different attempts — see `VIM-SDK-BRIDGE-TROUBLESHOOTING.md`'s
-"Update 2026-08-05" section before attempting further client-side fixes.
+only run after `initVimSDK()` already resolves.
+
+**2026-08-05, later same day — did a complete pass through every
+remaining docs page and fully read vim-demo-app**, including
+`vim-sdk.js` at its repo root: a checked-in, unminified reference copy
+of the SDK client protocol itself (not previously read — see
+`VIM-SDK-BRIDGE-TROUBLESHOOTING.md`'s "Update 2026-08-05 (part 2)" for
+the full detail). That file reveals `SDKClient.init()` has no protection
+against being called more than once in the same tab — a plausible,
+concrete mechanism for "identical config, sometimes connects, sometimes
+doesn't." Shipped `src/lib/vim-sdk-connection.ts`, a module-level
+(not component-level) cached connection promise, so a remount can never
+trigger a second `initVimSDK()` call for the same token. **Not yet
+retested against the sandbox** — if the bridge still fails
+intermittently after this, it needs Vim engineering (see the
+troubleshooting doc's questions); don't re-diagnose the multi-init
+theory from scratch if so, since this fix already addresses it.
 
 | Phase | What | Status |
 |---|---|---|
