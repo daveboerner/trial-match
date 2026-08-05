@@ -1,14 +1,16 @@
 # Vim Connect SDK — "SDK bridge initialization failed" (blocked, needs Vim engineering)
 
-**Status as of 2026-08-05: blocked, and now confirmed INTERMITTENT.** The
-OAuth flow (see the now-resolved `VIM-OAUTH-TROUBLESHOOTING.md`) completes
-correctly end-to-end — we obtain a valid, correctly-scoped access token.
-Handing that token to `initVimSDK()` fails inside Vim's own
+**Status as of 2026-08-05: blocked, confirmed intermittent, and we've
+shipped one more fix informed by reading the SDK's own client protocol
+source.** The OAuth flow (see the now-resolved `VIM-OAUTH-TROUBLESHOOTING.md`)
+completes correctly end-to-end — we obtain a valid, correctly-scoped
+access token. Handing that token to `initVimSDK()` fails inside Vim's own
 dynamically-loaded core-sdk script — but critically, **the exact same app
 configuration has both succeeded and failed on different attempts**, with
-nothing on our side changed between them. See "Update 2026-08-05" below —
-this is the most important new fact and should be the starting point for
-whoever picks this up on Vim's side.
+nothing on our side changed between them. See "Update 2026-08-05" and
+"Update 2026-08-05 (part 2)" below — the second one found a concrete,
+plausible mechanism for the intermittency and a real fix, but it hasn't
+been retested against the sandbox yet as of this note.
 
 ## Update 2026-08-05: confirmed intermittent, not deterministic
 
@@ -42,6 +44,65 @@ up to and including the `initVimSDK()` call itself. This points at
 something intermittent in the extension/core-sdk bridge handshake itself
 — not a deterministic misconfiguration we can find and fix from the
 application side.
+
+## Update 2026-08-05 (part 2): found a plausible mechanism, shipped a fix, not yet retested
+
+Did a complete pass through every remaining docs page (error-handling,
+react-integration, platform-overview, changelog, ehr-support) and fully
+read `vimconnect/vim-demo-app`, including a file not previously read:
+**`vim-sdk.js` at the demo repo's root — a checked-in, unminified
+reference copy of the SDK client protocol itself** (the file ends with
+`window.VimSDK = { init: initVimSDK, get: getVimSDK }`, confirming it's
+what `@vimconnect/app-sdk` dynamically loads and calls; comments inside
+point to `extensions/vim-connect/src/sidepanel/services/sdk-bridge.ts`
+as the parent/extension-side counterpart). This is presumably an older
+snapshot, not byte-identical to what's currently served from
+`core-sdk.getvim.ai` (it doesn't contain the literal string "SDK bridge
+initialization failed" or "sdk-handshake" — the currently-deployed
+version has evidently evolved past this snapshot), but the **protocol
+shape it reveals is almost certainly still representative**:
+
+- `SDKClient.init()` has **no protection against being called more than
+  once in the same browser tab.** Every call unconditionally creates a
+  brand-new client instance (overwriting the module-level singleton
+  reference to any prior instance, even one still mid-handshake),
+  registers another `window.addEventListener('message', ...)` listener,
+  and sends another `VIM_SDK_READY` postMessage to the parent frame.
+- The response-handling listener resolves against *whatever instance is
+  currently the singleton at the time a `VIM_SDK_INIT` message arrives*
+  — not necessarily the instance that sent the particular `VIM_SDK_READY`
+  the extension is responding to.
+- Two overlapping `init()` calls in the same tab would therefore race
+  multiple listeners against however many responses come back, with only
+  the most recently created instance actually getting wired up — a
+  concrete, plausible mechanism for "identical configuration, sometimes
+  connects, sometimes doesn't."
+
+Our own `use-chart-context.ts` had a `useRef` guard against the *same
+component instance's* effect re-firing (needed for a different, already-
+fixed bug — see the launch_id-mismatch history above) — but that
+guard is powerless against a genuine remount creating a fresh `useRef`.
+The `react-integration` docs page independently corroborates this angle:
+*"connection failures often stem from multiple initialization
+attempts"*, and recommends a single-source-of-truth Provider pattern for
+exactly this reason. (Note: `vim-demo-app`'s own main page does **not**
+actually follow that Provider pattern itself — it uses a component-level
+guard much like ours, so this inconsistency exists in Vim's own materials
+too, and isn't itself evidence our architecture was wrong.)
+
+**Fix shipped:** `src/lib/vim-sdk-connection.ts` — a *module-level*
+(not component-level) cached promise for the SDK connection, so that no
+matter how many times a component remounts, at most one `initVimSDK()`
+call ever fires per access token in a given page load. `use-chart-context.ts`
+now calls this instead of `initVimSDK()` directly.
+
+**Not yet retested against the sandbox as of this note.** If the bridge
+still fails intermittently after this fix, the remaining-suspect list is:
+something in the *actual, currently-deployed* `core-sdk.getvim.ai`
+script that differs from this older reference snapshot, or something in
+the extension/server-side handshake itself that no client-side fix can
+address (original ask to Vim engineering, below, still stands either
+way).
 
 ## One-line summary
 
