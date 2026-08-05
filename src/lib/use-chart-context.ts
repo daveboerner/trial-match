@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { initVimSDK } from '@vimconnect/app-sdk';
 import { MOCK_ACTIVE_PROBLEMS, type ActiveProblem } from './mock-data';
 import { beginAuthorize, getStoredAccessToken } from './vim-auth-client';
+import { connectVimSDKOnce } from './vim-sdk-connection';
 
 export type ChartStatus = 'standalone' | 'waiting-for-chart' | 'chart-ready';
 
@@ -91,7 +91,7 @@ export function useChartContext(): ChartContextState {
     (async () => {
       let sdk;
       try {
-        sdk = await initVimSDK({ accessToken });
+        sdk = await connectVimSDKOnce(accessToken);
       } catch (err) {
         console.warn('[trial-match] Vim SDK failed to connect with stored access token:', err);
         return;
