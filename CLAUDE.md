@@ -62,11 +62,22 @@ against being called more than once in the same tab — a plausible,
 concrete mechanism for "identical config, sometimes connects, sometimes
 doesn't." Shipped `src/lib/vim-sdk-connection.ts`, a module-level
 (not component-level) cached connection promise, so a remount can never
-trigger a second `initVimSDK()` call for the same token. **Not yet
-retested against the sandbox** — if the bridge still fails
-intermittently after this, it needs Vim engineering (see the
-troubleshooting doc's questions); don't re-diagnose the multi-init
-theory from scratch if so, since this fix already addresses it.
+trigger a second `initVimSDK()` call for the same token.
+
+**Retested — identical error, identical stack location
+(`sdk-handshake.ts:306:11`), identical fallback to `standalone`. The
+multi-init theory is ruled out** (the fix is still correct/worth
+keeping, it just isn't the cause here). **This closes out every
+app-side avenue tried across the whole investigation** — timing, launch_id
+reuse, staging/prod backend mismatch, wrong client_id (this one was real,
+fixed), missing EHR capabilities (got it to connect once, not reliably),
+the staging core-sdk override, CSP headers, concurrent init calls. Every
+docs page and the full reference app (including its protocol source)
+have been read. **There is nothing left to try without Vim engineering's
+visibility into the extension/server-side handshake** — see
+`VIM-SDK-BRIDGE-TROUBLESHOOTING.md`'s "Update 2026-08-05 (part 3)". Don't
+re-attempt client-side fixes for this specific error without new
+information from that side.
 
 | Phase | What | Status |
 |---|---|---|
