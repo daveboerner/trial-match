@@ -1,9 +1,47 @@
 # Vim Connect SDK — "SDK bridge initialization failed" (blocked, needs Vim engineering)
 
-**Status as of 2026-08-04: blocked.** The OAuth flow (see the now-resolved
-`VIM-OAUTH-TROUBLESHOOTING.md`) completes correctly end-to-end — we obtain
-a valid, correctly-scoped access token. Handing that token to
-`initVimSDK()` fails inside Vim's own dynamically-loaded core-sdk script.
+**Status as of 2026-08-05: blocked, and now confirmed INTERMITTENT.** The
+OAuth flow (see the now-resolved `VIM-OAUTH-TROUBLESHOOTING.md`) completes
+correctly end-to-end — we obtain a valid, correctly-scoped access token.
+Handing that token to `initVimSDK()` fails inside Vim's own
+dynamically-loaded core-sdk script — but critically, **the exact same app
+configuration has both succeeded and failed on different attempts**, with
+nothing on our side changed between them. See "Update 2026-08-05" below —
+this is the most important new fact and should be the starting point for
+whoever picks this up on Vim's side.
+
+## Update 2026-08-05: confirmed intermittent, not deterministic
+
+Sequence, in order, same day:
+1. Declared EHR capabilities in the app registration's **EHR tab**
+   (previously completely empty — nothing was checked). Deployed.
+2. Tested fresh in the sandbox: **the bridge connected successfully.**
+   Patient in context, panel correctly showed "waiting for a patient
+   chart to open" (proving `initVimSDK()` had resolved), Hub showed "May
+   not be ready" (a separate, since-fixed issue — see below).
+3. Fixed two follow-on issues found from that successful connection: (a)
+   switched from `workflow.on('chart_open', ...)` to
+   `context.onChange('chart_open:patient', ...)` since a workflow event
+   subscription set up *after* the patient was already in context would
+   permanently miss that one-shot event; (b) added
+   `sdk.hub.setActivationStatus('ENABLED')`, which the quick-start guide
+   calls immediately after a successful `initVimSDK()` and which we'd
+   omitted — this is what "May not be ready" turned out to be. Deployed.
+4. **Retested with a genuinely fresh launch (new `launch_id`, new
+   authorize round-trip, new access token) — `"SDK bridge initialization
+   failed"` again, identical to before step 1.**
+5. Re-verified the EHR tab capabilities were still checked/saved (not
+   reverted) — confirmed yes, still all checked.
+
+Steps 3's code changes only run **after** `initVimSDK()` already
+resolves — they cannot be the cause of `initVimSDK()` itself newly
+failing. So between the success in step 2 and the failure in step 4,
+nothing on our side changed that could plausibly explain the difference:
+same client_id, same registration, same EHR capabilities, same code path
+up to and including the `initVimSDK()` call itself. This points at
+something intermittent in the extension/core-sdk bridge handshake itself
+— not a deterministic misconfiguration we can find and fix from the
+application side.
 
 ## One-line summary
 
@@ -74,25 +112,24 @@ sourcemap-resolved filename from the script dynamically loaded from
 
 ## What we need Vim engineering to check
 
-1. Server/extension-side logs for this specific `client_id`
-   (`vim_bd726f3119d1041971c7d7364baee74f`) and launch
-   (`lnch_198088c99d0f0aa9356f6ba13026372b5f5cfa7d0e5ab3167d3b7124fca9b1b5`)
-   around the time of this test (2026-08-04) — what does the extension's
-   side of the handshake actually see/reject?
-2. Is there a known cause for `"SDK bridge initialization failed"`
+1. **Most important: why does the bridge handshake succeed on some
+   attempts and fail with `"SDK bridge initialization failed"` on others,
+   for the same `client_id`, same registration, same EHR capabilities?**
+   Is there a race condition, a rate limit, a config-propagation delay
+   (we've hit real propagation delays elsewhere in this app's setup —
+   see `VIM-OAUTH-TROUBLESHOOTING.md`), or session/extension-state
+   flakiness on Vim's side that would explain success and failure both
+   occurring under identical app-side conditions?
+2. Server/extension-side logs for `client_id`
+   `vim_bd726f3119d1041971c7d7364baee74f`, comparing the successful
+   attempt (2026-08-05, step 2 above) against a failed one (step 4) —
+   what's actually different on the extension's side between them?
+3. Is there a known cause for `"SDK bridge initialization failed"`
    distinct from the `HANDSHAKE_TIMEOUT` / `"Permission bridge
-   unreachable"` messages we found in the core-sdk script — e.g., a
-   permission/scope issue, a manifest capability not enabled for this
-   app, or something about how the app is embedded (side panel vs. other
-   embed modes) that affects whether the extension can complete this
-   handshake?
-3. Does this app's registration (`console.stage.getvim.ai/build/apps/305d7d2a-7f7b-45ae-83db-75c70071d75b`
-   — note: that URL segment is the appId, not client_id) have all the
-   capabilities/permissions enabled that a real bridge handshake
-   requires, beyond just the OAuth endpoints we've already verified?
-4. Is there anything different about how `vimconnect/vim-demo-app` (which
-   presumably works, since it's the official reference) is embedded or
-   registered that we should check ours against — e.g., a Worker Launch
-   Endpoint, manifest capabilities, or some other registration field we
-   haven't touched (ours is blank; do we need one for the bridge
-   handshake to succeed even for the non-worker main app)?
+   unreachable"` messages we found in the core-sdk script?
+4. Is there anything different about how `vimconnect/vim-demo-app` (the
+   official reference) is embedded or registered that we should check
+   ours against — e.g., a Worker Launch Endpoint, additional manifest
+   capabilities beyond EHR data access, or some other registration field
+   we haven't touched (ours is blank; do we need one for the bridge
+   handshake to succeed reliably, even for the non-worker main app)?
