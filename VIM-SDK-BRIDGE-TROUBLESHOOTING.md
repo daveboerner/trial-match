@@ -1,16 +1,15 @@
-# Vim Connect SDK — "SDK bridge initialization failed" (blocked, needs Vim engineering)
+# Vim Connect SDK — "SDK bridge initialization failed" (blocked, needs Vim engineering — client-side avenues exhausted)
 
-**Status as of 2026-08-05: blocked, confirmed intermittent, and we've
-shipped one more fix informed by reading the SDK's own client protocol
-source.** The OAuth flow (see the now-resolved `VIM-OAUTH-TROUBLESHOOTING.md`)
+**Status as of 2026-08-05: blocked. Every plausible app-side cause has
+now been tried and ruled out — this needs someone with visibility into
+Vim's extension/server-side handshake logs, not another client-side
+guess.** The OAuth flow (see the now-resolved `VIM-OAUTH-TROUBLESHOOTING.md`)
 completes correctly end-to-end — we obtain a valid, correctly-scoped
 access token. Handing that token to `initVimSDK()` fails inside Vim's own
-dynamically-loaded core-sdk script — but critically, **the exact same app
-configuration has both succeeded and failed on different attempts**, with
-nothing on our side changed between them. See "Update 2026-08-05" and
-"Update 2026-08-05 (part 2)" below — the second one found a concrete,
-plausible mechanism for the intermittency and a real fix, but it hasn't
-been retested against the sandbox yet as of this note.
+dynamically-loaded core-sdk script, with the exact same app configuration
+both succeeding and failing across different fresh-launch attempts. See
+"Update 2026-08-05 (part 3)" at the bottom for the final negative result
+before reading this doc's history below.
 
 ## Update 2026-08-05: confirmed intermittent, not deterministic
 
@@ -96,13 +95,37 @@ matter how many times a component remounts, at most one `initVimSDK()`
 call ever fires per access token in a given page load. `use-chart-context.ts`
 now calls this instead of `initVimSDK()` directly.
 
-**Not yet retested against the sandbox as of this note.** If the bridge
-still fails intermittently after this fix, the remaining-suspect list is:
-something in the *actual, currently-deployed* `core-sdk.getvim.ai`
-script that differs from this older reference snapshot, or something in
-the extension/server-side handshake itself that no client-side fix can
-address (original ask to Vim engineering, below, still stands either
-way).
+## Update 2026-08-05 (part 3): retested — same error, same stack location. Multi-init theory ruled out.
+
+Retested a genuinely fresh launch with the module-level connection
+singleton live. **Identical result**:
+```
+[trial-match] Vim SDK failed to connect with stored access token: SDKError: SDK bridge initialization failed
+    at h (sdk-handshake.ts:306:11)
+```
+Same message, same stack location, panel fell back to `standalone`
+exactly as before. Since this fix specifically makes a second
+`initVimSDK()` call for the same token impossible, and the failure is
+unchanged, **the multi-init-attempts theory is now ruled out** as the
+cause of this specific failure (the fix is still worth keeping — it's a
+real, independently-correct improvement — it just isn't what's causing
+this).
+
+**This closes out what's checkable from the application side.** Across
+this investigation we have tried, and ruled out, every one of:
+timing/expiry, duplicate-redirect launch_id reuse, staging-vs-production
+backend URL mismatch, wrong client_id (appId confusion — this one was
+real and fixed), missing EHR capability declarations (this got the
+bridge to connect *once*, but didn't make it reliable), the
+`__overrideEnv` staging core-sdk override, CSP/frame headers on our
+deployment, and now concurrent/duplicate `initVimSDK()` calls. Every
+docs page and the full reference implementation (including its
+lowest-level protocol source, `vim-sdk.js`) have been read. There is
+nothing left to try from this side without visibility into what the
+extension or Vim's servers actually see during a failing handshake vs. a
+succeeding one for the exact same app configuration. **The path forward
+is Vim engineering, not another client-side change** — see "What we need
+Vim engineering to check" below, which still stands as written.
 
 ## One-line summary
 
