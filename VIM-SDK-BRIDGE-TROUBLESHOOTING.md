@@ -1,16 +1,19 @@
-# Vim Connect SDK — "SDK bridge initialization failed" (blocked, needs Vim engineering — client-side avenues exhausted)
+# Vim Connect SDK — "SDK bridge initialization failed" (RESOLVED — local Chrome environment issue)
 
-**Status as of 2026-08-05: likely root-caused to the Vim Connect
-extension itself, via its own boot logs — not an app-side bug.** The
-OAuth flow (see the now-resolved `VIM-OAUTH-TROUBLESHOOTING.md`)
-completes correctly end-to-end — we obtain a valid, correctly-scoped
-access token. Handing that token to `initVimSDK()` fails inside Vim's own
-dynamically-loaded core-sdk script, with the exact same app configuration
-both succeeding and failing across different fresh-launch attempts.
-**Skip straight to "Update 2026-08-05 (part 4)" at the bottom** — it
-contains actual extension-side boot logs showing the extension's own
-content-script bridge to the EHR page timing out, which is almost
-certainly the real root cause behind everything documented above it.
+**RESOLVED 2026-08-05.** Actual root cause: **a second, conflicting Vim
+Connect extension was active in the same Chrome profile.** Two extension
+instances both trying to inject content scripts and bridge into the same
+EHR page raced and collided — matching the extension boot logs in
+"Update 2026-08-05 (part 4)" below exactly (`initializeDriverSystem`
+timing out, `"Bridge not connected"`), and explaining the intermittency
+(which extension "won" the race varied between attempts). Not a bug in
+Trial Match's code, registration, or Vim's servers at all — disabling
+the conflicting extension fixed it. Kept the rest of this doc for the
+debugging narrative and because the extension-log-reading technique
+(exporting the Vim Connect extension's own debug logs to see past the
+app-level error into what the extension itself was doing) is a
+genuinely useful diagnostic for next time, even though the root cause
+here turned out to be local-environment, not server/extension-code.
 
 ## Update 2026-08-05: confirmed intermittent, not deterministic
 
@@ -252,7 +255,12 @@ also worth noting this may not be specific to Trial Match at all — a
 flaky content-script bridge to the Sandbox EHR page would presumably
 affect any app running in that Hub.
 
-## What we need Vim engineering to check
+## What we needed Vim engineering to check (superseded — resolved locally, no longer needed)
+
+Turned out to be a conflicting second Vim Connect extension in the same
+Chrome profile — see the RESOLVED note at the top. Keeping these
+questions for the record; nothing further needed from Vim engineering
+on this specific error.
 
 1. **Most important, and now the primary lead:** the extension's own
    content-script boot log shows `initializeDriverSystem` timing out
