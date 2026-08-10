@@ -10,92 +10,32 @@ making changes. Update it when a phase completes or a decision changes.
 
 ## Current status
 
-**Phases 1 through 3 are done. Phase 4's OAuth flow now works completely
-end-to-end (real fresh access token obtained, confirmed correct
-client_id/launch_id/redirect_uri) — but handing that token to
-`initVimSDK()` fails inside Vim's own Chrome extension, not our code.
-Currently blocked on Vim engineering.** Getting the OAuth half working
-took four real, distinct bugs across 2026-08-03 → 2026-08-04: (1) the SDK
-does not auto-resolve a token — we drive the `/app-auth/authorize`
-redirect ourselves; (2) a double-fired redirect could invalidate a
-`launch_id` by using it twice (fixed with a `useRef` guard); (3)
-`VIM_BACKEND_URL` was pointed at production while testing against the
-staging sandbox (fixed — now staging); (4) every env var and doc
-reference to "client_id" was actually the app's **appId**
-(`305d7d2a-7f7b-45ae-83db-75c70071d75b`) — the real `client_id` is
-`vim_bd726f3119d1041971c7d7364baee74f` (see `VIM-OAUTH-TROUBLESHOOTING.md`,
-now resolved/stale, kept for the debugging narrative). **Current blocker,
-2026-08-04, see `VIM-SDK-BRIDGE-TROUBLESHOOTING.md`:** with a confirmed
-valid, correctly-scoped access token in hand, `initVimSDK({ accessToken })`
-fails with `SDKError: SDK bridge initialization failed` — this happens
-inside the dynamically-loaded `core-sdk.getvim.ai` script's own
-postMessage handshake with the Chrome extension, not in our code or in
-`@vimconnect/app-sdk`'s package (confirmed by grepping both — no match).
-Tried and ruled out: the `__overrideEnv: 'staging'` override made zero
-difference either way (added, tested, removed, tested — identical
-error both times); no CSP/frame headers on our side that could
-interfere. **2026-08-05 update — this is now confirmed intermittent, not
-deterministic:** declaring EHR capabilities in the app registration's
-EHR tab (previously empty) got the bridge to connect successfully once
-(patient in context, panel correctly reached `waiting-for-chart`,
-proving `initVimSDK()` had resolved) — but a subsequent fresh-launch
-retest, with the *same* registration/capabilities (re-verified still
-checked), failed with the identical `SDK bridge initialization failed`
-error again. Also fixed two follow-on issues discovered during that one
-successful connection (both in `use-chart-context.ts`, both real, keep
-them regardless of the bridge issue): switched
-`workflow.on('chart_open', ...)` → `context.onChange('chart_open:patient', ...)`
-(a workflow subscription set up after the patient's already in context
-permanently misses that one-shot event) and added
-`sdk.hub.setActivationStatus('ENABLED')` (missing before; caused the Hub
-to show "May not be ready" even once genuinely connected). **Neither of
-those two fixes can explain the bridge itself failing again** — they
-only run after `initVimSDK()` already resolves.
+**Phases 1 through 4 are done.** Phase 4's OAuth flow, EHR capability
+declaration, `chart_open` handling, and Hub activation are all working.
+Getting there took a long chain of real, distinct bugs (2026-08-03 →
+2026-08-05) — full blow-by-blow preserved in `VIM-OAUTH-TROUBLESHOOTING.md`
+(resolved) and `VIM-SDK-BRIDGE-TROUBLESHOOTING.md` (resolved), worth
+skimming before touching auth/SDK-connection code again since several
+non-obvious traps are documented there (appId vs. client_id look
+identical but are different fields; a stored access token must never be
+reused across a new `launch_id`; `workflow.on('chart_open', ...)` misses
+a patient already in context, use `context.onChange('chart_open:patient', ...)`
+instead; call `sdk.hub.setActivationStatus('ENABLED')` after connecting
+or the Hub shows "May not be ready" even when genuinely connected).
 
-**2026-08-05, later same day — did a complete pass through every
-remaining docs page and fully read vim-demo-app**, including
-`vim-sdk.js` at its repo root: a checked-in, unminified reference copy
-of the SDK client protocol itself (not previously read — see
-`VIM-SDK-BRIDGE-TROUBLESHOOTING.md`'s "Update 2026-08-05 (part 2)" for
-the full detail). That file reveals `SDKClient.init()` has no protection
-against being called more than once in the same tab — a plausible,
-concrete mechanism for "identical config, sometimes connects, sometimes
-doesn't." Shipped `src/lib/vim-sdk-connection.ts`, a module-level
-(not component-level) cached connection promise, so a remount can never
-trigger a second `initVimSDK()` call for the same token.
-
-**Retested — identical error, identical stack location
-(`sdk-handshake.ts:306:11`), identical fallback to `standalone`. The
-multi-init theory is ruled out** (the fix is still correct/worth
-keeping, it just isn't the cause here). **This closes out every
-app-side avenue tried across the whole investigation** — timing, launch_id
-reuse, staging/prod backend mismatch, wrong client_id (this one was real,
-fixed), missing EHR capabilities (got it to connect once, not reliably),
-the staging core-sdk override, CSP headers, concurrent init calls. Every
-docs page and the full reference app (including its protocol source)
-have been read. **There is nothing left to try without Vim engineering's
-visibility into the extension/server-side handshake** — see
-`VIM-SDK-BRIDGE-TROUBLESHOOTING.md`'s "Update 2026-08-05 (part 3)". Don't
-re-attempt client-side fixes for this specific error without new
-information from that side.
-
-**2026-08-05, actual root cause found — not app-side at all.** The
-Trial Match icon was also completely missing from the Vim Hub strip
-(distinct symptom from the bridge error). Dave exported the Vim Connect
-**extension's own debug logs** for that tab, which show the extension's
-content script (injected into the Sandbox EHR page, entirely independent
-of our app) failing to boot: `initializeDriverSystem` times out after
-~5.1s with `"Bridge not connected"` at `CommunicationBridge.subscribe`.
-This is the extension bridging into the EHR *page*, nothing to do with
-our client_id, registration, or code — and it plausibly explains both
-the missing Hub icon and the intermittent `"SDK bridge initialization
-failed"` in our own app (our iframe's handshake likely depends on this
-same content-script bridge being healthy first). See
-`VIM-SDK-BRIDGE-TROUBLESHOOTING.md`'s "Update 2026-08-05 (part 4)" for
-the full log excerpt and questions for Vim engineering. **This is now the
-primary lead — a future session should not restart from the app-level
-framing above without first checking whether this extension-side issue
-has been addressed.**
+**The final, most stubborn symptom — intermittent `"SDK bridge
+initialization failed"` and the Hub icon sometimes missing entirely —
+turned out to be a local Chrome environment issue, not a bug in Trial
+Match or Vim's servers at all: a second, conflicting Vim Connect
+extension was active in the same Chrome profile.** Two content scripts
+racing to bridge into the same EHR page explains the intermittency
+exactly. Confirmed via the extension's own exported debug logs (a
+genuinely useful diagnostic technique, documented in the troubleshooting
+doc's "part 4," for seeing past an app-level error into what the
+extension itself is doing). Disabling the conflicting extension fixed
+it. `src/lib/vim-sdk-connection.ts` (the module-level connection-promise
+guard) is a real, independent improvement from this investigation and
+should stay regardless.
 
 | Phase | What | Status |
 |---|---|---|
@@ -103,7 +43,7 @@ has been addressed.**
 | 1.5 | Live smoke test against real network | ✅ Done 2026-07-31 — see results below |
 | 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
 | 3 | Wire real Phase 1 API into Phase 2 UI | ✅ Done 2026-07-31 — see Phase 3 notes below |
-| 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration, auth flow | 🔴 OAuth flow fully working (2026-08-04); blocked on `SDK bridge initialization failed` inside Vim's extension — **needs Vim engineering, see `VIM-SDK-BRIDGE-TROUBLESHOOTING.md`** |
+| 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration, auth flow | ✅ Done 2026-08-05 — see `VIM-SDK-BRIDGE-TROUBLESHOOTING.md` / `VIM-OAUTH-TROUBLESHOOTING.md` for the full debugging history |
 | 5 | Encounter writeback (Tier 1) | ⬜ Not started |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
 
