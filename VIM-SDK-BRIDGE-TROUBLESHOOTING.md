@@ -1,15 +1,16 @@
 # Vim Connect SDK — "SDK bridge initialization failed" (blocked, needs Vim engineering — client-side avenues exhausted)
 
-**Status as of 2026-08-05: blocked. Every plausible app-side cause has
-now been tried and ruled out — this needs someone with visibility into
-Vim's extension/server-side handshake logs, not another client-side
-guess.** The OAuth flow (see the now-resolved `VIM-OAUTH-TROUBLESHOOTING.md`)
+**Status as of 2026-08-05: likely root-caused to the Vim Connect
+extension itself, via its own boot logs — not an app-side bug.** The
+OAuth flow (see the now-resolved `VIM-OAUTH-TROUBLESHOOTING.md`)
 completes correctly end-to-end — we obtain a valid, correctly-scoped
 access token. Handing that token to `initVimSDK()` fails inside Vim's own
 dynamically-loaded core-sdk script, with the exact same app configuration
-both succeeding and failing across different fresh-launch attempts. See
-"Update 2026-08-05 (part 3)" at the bottom for the final negative result
-before reading this doc's history below.
+both succeeding and failing across different fresh-launch attempts.
+**Skip straight to "Update 2026-08-05 (part 4)" at the bottom** — it
+contains actual extension-side boot logs showing the extension's own
+content-script bridge to the EHR page timing out, which is almost
+certainly the real root cause behind everything documented above it.
 
 ## Update 2026-08-05: confirmed intermittent, not deterministic
 
@@ -194,26 +195,85 @@ sourcemap-resolved filename from the script dynamically loaded from
    script and the Chrome extension itself, not something we can
    inspect or influence from application code.
 
+## Update 2026-08-05 (part 4): extension boot logs show the real root cause — not app-side at all
+
+Separately from all the above, we noticed the Trial Match icon was
+**completely missing from the Vim Hub strip** — not just failing to
+connect, genuinely absent. Dave exported the Vim Connect extension's own
+debug logs (via its extension-logs export feature) for the tab where
+this was happening. They show the extension's **content script itself**
+(injected into the Sandbox EHR page, independent of our app/iframe
+entirely) failing to boot:
+
+```
+[Vim Connect] Content script initializing in tab 315965567
+[Messaging] Sending to background: TAB_CONTENT_STARTING
+[Messaging] Sending to background: SESSION_CONTEXT_GET
+[CommunicationBridge] Sent alive message to MAIN world
+...
+ERROR [Vim Connect] Failed to initialize driver system: Connection timeout
+    at chrome-extension://hkgoafgiinlkilinanffdoehogbhckeo/src/content/content-script.js:449:37
+[Vim Connect] Driver system initialized without bridge
+ERROR [Vim Connect] boot failed
+  step: "wireNetworkMonitor", totalDurationMs: 5188
+  completed: [["getTabId",8],["fetchPriorContext",9,{"hasPrior":false}],
+              ["loadEnvConsoleGate",6],["initializeDriverSystem",5163]]
+  error: Error: Bridge not connected
+    at CommunicationBridge.subscribe (chrome-extension://.../content-script.js:540:15)
+    at initialize (chrome-extension://.../content-script.js:25829:41)
+```
+
+Reading this boot sequence: `getTabId` (8ms), `fetchPriorContext` (9ms,
+no prior context), `loadEnvConsoleGate` (6ms) all complete fine, then
+`initializeDriverSystem` — which registers detection drivers for `dom`,
+`url`, `redirect`, `network`, `angular`, `ember`, `backbone` (presumably
+to detect the host EHR's own frontend framework/state) — **takes
+5163ms and times out**, degrading to "initialized without bridge." The
+overall content-script boot then fails outright with `Bridge not
+connected` when something later tries to `CommunicationBridge.subscribe`.
+
+**This is the extension bridging into the EHR page itself — entirely
+independent of our app, our iframe, our client_id, or our registration.**
+It plausibly explains everything documented above:
+- Why the Hub icon is sometimes/completely missing (if the extension
+  can't bridge into the page, it can't detect page state to render the
+  Hub strip reliably)
+- Why our own `"SDK bridge initialization failed"` is intermittent with
+  *identical* app config — our iframe's handshake likely depends on this
+  same underlying content-script/bridge infrastructure being healthy
+  first, and it's timing out on a ~5-second race, not failing
+  deterministically
+- Why nothing we changed on the application side ever made a
+  difference — there was nothing to fix there
+
+**This should be treated as the primary lead**, not the app-level
+"SDK bridge initialization failed" framing this doc started with. It's
+also worth noting this may not be specific to Trial Match at all — a
+flaky content-script bridge to the Sandbox EHR page would presumably
+affect any app running in that Hub.
+
 ## What we need Vim engineering to check
 
-1. **Most important: why does the bridge handshake succeed on some
-   attempts and fail with `"SDK bridge initialization failed"` on others,
-   for the same `client_id`, same registration, same EHR capabilities?**
-   Is there a race condition, a rate limit, a config-propagation delay
-   (we've hit real propagation delays elsewhere in this app's setup —
-   see `VIM-OAUTH-TROUBLESHOOTING.md`), or session/extension-state
-   flakiness on Vim's side that would explain success and failure both
-   occurring under identical app-side conditions?
-2. Server/extension-side logs for `client_id`
-   `vim_bd726f3119d1041971c7d7364baee74f`, comparing the successful
-   attempt (2026-08-05, step 2 above) against a failed one (step 4) —
-   what's actually different on the extension's side between them?
-3. Is there a known cause for `"SDK bridge initialization failed"`
-   distinct from the `HANDSHAKE_TIMEOUT` / `"Permission bridge
-   unreachable"` messages we found in the core-sdk script?
+1. **Most important, and now the primary lead:** the extension's own
+   content-script boot log shows `initializeDriverSystem` timing out
+   after ~5.1 seconds with `"Bridge not connected"` on the Sandbox EHR
+   page (`sandbox-ehr.stage.getvim.ai`), independent of any specific
+   app. Is this a known issue with the extension's content-script bridge
+   on this sandbox environment? Full extension log export is available
+   on request — key excerpt is in "Update 2026-08-05 (part 4)" above.
+2. Is `initializeDriverSystem`'s ~5s timeout adjustable, or is there a
+   known cause for it failing specifically against the Sandbox EHR (as
+   opposed to a real production EHR)?
+3. Assuming the content-script bridge issue above is fixed or explained:
+   why did the bridge handshake succeed on one fresh-launch attempt and
+   fail with `"SDK bridge initialization failed"` on others, for the
+   same `client_id`, same registration, same EHR capabilities? Comparing
+   server/extension-side logs for a successful attempt against a failed
+   one (both documented with exact `launch_id`s above) would help
+   confirm whether it's the same content-script timing issue or
+   something separate.
 4. Is there anything different about how `vimconnect/vim-demo-app` (the
    official reference) is embedded or registered that we should check
    ours against — e.g., a Worker Launch Endpoint, additional manifest
    capabilities beyond EHR data access, or some other registration field
-   we haven't touched (ours is blank; do we need one for the bridge
-   handshake to succeed reliably, even for the non-worker main app)?
+   we haven't touched (ours is blank)?
