@@ -79,6 +79,24 @@ visibility into the extension/server-side handshake** — see
 re-attempt client-side fixes for this specific error without new
 information from that side.
 
+**2026-08-05, actual root cause found — not app-side at all.** The
+Trial Match icon was also completely missing from the Vim Hub strip
+(distinct symptom from the bridge error). Dave exported the Vim Connect
+**extension's own debug logs** for that tab, which show the extension's
+content script (injected into the Sandbox EHR page, entirely independent
+of our app) failing to boot: `initializeDriverSystem` times out after
+~5.1s with `"Bridge not connected"` at `CommunicationBridge.subscribe`.
+This is the extension bridging into the EHR *page*, nothing to do with
+our client_id, registration, or code — and it plausibly explains both
+the missing Hub icon and the intermittent `"SDK bridge initialization
+failed"` in our own app (our iframe's handshake likely depends on this
+same content-script bridge being healthy first). See
+`VIM-SDK-BRIDGE-TROUBLESHOOTING.md`'s "Update 2026-08-05 (part 4)" for
+the full log excerpt and questions for Vim engineering. **This is now the
+primary lead — a future session should not restart from the app-level
+framing above without first checking whether this extension-side issue
+has been addressed.**
+
 | Phase | What | Status |
 |---|---|---|
 | 1 | Trial-search backend (geocode, CT.gov v2 client, normalize, cache) | ✅ Done — 10 unit tests passing, typechecks clean |
