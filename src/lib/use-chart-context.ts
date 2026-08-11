@@ -103,6 +103,21 @@ export function useChartContext(): ChartContextState {
       // (confirmed 2026-08-05: this exact symptom, in the real sandbox).
       // Part of the official quick-start guide's Step 5, which we'd missed.
       sdk.hub.setActivationStatus('ENABLED');
+      console.log('[trial-match] SDK connected');
+
+      // Kept permanently (not just temp debug) — Dave found this genuinely
+      // useful for seeing what's actually in context/available during
+      // real-sandbox testing, not just when actively chasing a bug.
+      // contextWriteback here specifically is what Phase 5 (encounter
+      // writeback) needs to know which fields are actually writable for
+      // this EHR before assuming a field path — don't hardcode one without
+      // checking this first.
+      const manifest = sdk.ehr.getManifest();
+      console.log('[trial-match] manifest', {
+        supportedEvents: manifest.supportedEvents?.map((e) => e.id),
+        supportedContexts: manifest.supportedContexts?.map((c) => c.contextKey),
+        contextWriteback: manifest.contextWriteback,
+      });
 
       setState({ status: 'waiting-for-chart', problems: [], zip: null });
 
@@ -129,6 +144,13 @@ export function useChartContext(): ChartContextState {
       // empirically confirmed tab-independent for getProblems()) when the
       // inline field is empty.
       unsubscribe = sdk.ehr.context.onChange('chart_open:patient', async (prev, curr) => {
+        console.log('[trial-match:context] chart_open:patient changed', {
+          hadPrev: !!prev,
+          hasCurr: !!curr,
+          inlineAddress: curr?.fields?.address,
+          inlineProblemsCount: curr?.fields?.problems?.length,
+        });
+
         if (!curr) {
           setState({ status: 'waiting-for-chart', problems: [], zip: null });
           return;
@@ -140,11 +162,15 @@ export function useChartContext(): ChartContextState {
         if (!rawProblems || rawProblems.length === 0) {
           try {
             const res = await sdk.ehr.api.patient.getProblems();
+            console.log('[trial-match:getProblems] fallback result', {
+              success: res.success,
+              count: res.success ? res.data?.length : undefined,
+            });
             if (res.success) {
               rawProblems = res.data;
             }
           } catch (err) {
-            console.warn('[trial-match] getProblems() fallback failed:', err);
+            console.warn('[trial-match:getProblems] fallback threw', err);
           }
         }
 
@@ -152,11 +178,15 @@ export function useChartContext(): ChartContextState {
         if (!zip) {
           try {
             const res = await sdk.ehr.api.patient.getPatient();
+            console.log('[trial-match:getPatient] fallback result', {
+              success: res.success,
+              zip: res.success ? res.data.address?.zipCode : undefined,
+            });
             if (res.success) {
               zip = res.data.address?.zipCode ?? null;
             }
           } catch (err) {
-            console.warn('[trial-match] getPatient() fallback failed:', err);
+            console.warn('[trial-match:getPatient] fallback threw', err);
           }
         }
         if (cancelled) return;
@@ -168,6 +198,8 @@ export function useChartContext(): ChartContextState {
             label: p.description as string,
             searchTerm: p.description as string,
           }));
+
+        console.log('[trial-match:context] resolved state', { zip, problemCount: problems.length });
 
         // Belt-and-suspenders: if getPatient() somehow also comes back
         // without an address, keep the last known-good zip rather than
