@@ -195,6 +195,35 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
+### Real cause of lost patient context found: maybeResetToWaiting fired too early (found 2026-08-11)
+
+The sticky-fallback fix above looked like it wasn't working — the fixed
+"resolved state" log showed `committedZip: null, committedProblemCount: 0`
+even right after opening an encounter from a chart that had good data.
+Root cause wasn't the fallback logic itself: `chart_open:patient`'s close
+callback (`hasCurr: false`) and `encounter_open:patient`'s open callback
+(`hasCurr: true`) are **not atomic** — confirmed via the console log
+ordering, the close fires measurably before the open does, even though
+from the provider's perspective they're viewing the same patient
+continuously. `maybeResetToWaiting()` checked `hasChartPatient`/
+`hasEncounterPatient` synchronously inside the close callback, saw both
+false (because `encounter_open:patient` hadn't run yet), and reset state
+to empty *before* `resolvePatientFields` ever ran for the encounter side
+— so by the time the sticky fallback checked `prevState`, prevState was
+already wiped.
+
+Fixed by debouncing `maybeResetToWaiting()` 500ms and re-checking the
+(closure-captured, mutable) flags at fire time rather than resetting
+synchronously — this bridges the gap between the two callbacks without
+masking a genuine "no patient anywhere" state, which still resets
+correctly once the delay elapses with both flags still false.
+
+Also added `window.__trialMatchSdk` (set right after connecting) as a
+permanent debug hook — lets a raw `sdk.ehr.context.encounter.update(...)`
+be run directly from the console, decoupled from our own state/gating,
+to isolate whether a writeback failure is on the EHR/extension side or in
+our own call path.
+
 ### "resolved state" log was misleading; encounter.update() actually fails via a DOM-automation timeout (found 2026-08-11)
 
 The `[trial-match:context] resolved state` log printed the raw
