@@ -195,6 +195,37 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
+### "resolved state" log was misleading; encounter.update() actually fails via a DOM-automation timeout (found 2026-08-11)
+
+The `[trial-match:context] resolved state` log printed the raw
+`zip`/`problems` locals *before* the sticky-fallback logic ran, so every
+failed resolution logged `{zip: null, problemCount: 0}` regardless of
+what state actually got committed — during a live debugging session this
+made the sticky fallback (above) look broken when it may well have been
+working. Fixed: the log now runs inside the `setState` callback and
+prints both `rawZip`/`rawProblemCount` (pre-fallback) and `committedZip`/
+`committedProblemCount` (what actually lands in state) side by side.
+Lesson: don't log the ingredients of a fallback calculation as if they
+were the result.
+
+Separately, and more importantly: `sdk.ehr.context.encounter.update()`
+itself is confirmed **failing outright** for this Sandbox EHR —
+`{"success":false,"error":"waitForElement timed out after 3000ms —
+element not found: \"body > div[style*=\"9999\"] button\""}`, seen as the
+literal `.error` field of the `UpdateResult`, not stray page text.
+Confirmed via `grep` that this string exists nowhere in `trial-match` or
+`@vimconnect/app-sdk` — it's internal to however this Sandbox EHR
+implements writeback. The shape of the error (`waitForElement`, a
+`z-index: 9999` selector) strongly suggests this EHR's `update()`
+performs the write by finding and clicking a real "Add diagnosis" button
+in the EHR's own rendered UI (DOM automation) rather than a pure backend
+call — meaning it likely requires the Assessments/diagnoses section of
+the encounter to actually be open/visible in the main EHR window at the
+moment `update()` is called. Our sidepanel button click has no way to
+guarantee that. **Not yet confirmed**: whether opening that section first
+fixes it — next test should have the Assessments panel visibly open
+before clicking "Add to chart."
+
 ### `problems` had no sticky fallback; rapid context bouncing causes a second, different error (found 2026-08-11)
 
 Dave reported still losing patient context on opening an encounter, after
