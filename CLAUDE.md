@@ -44,7 +44,7 @@ should stay regardless.
 | 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
 | 3 | Wire real Phase 1 API into Phase 2 UI | ✅ Done 2026-07-31 — see Phase 3 notes below |
 | 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration, auth flow | ✅ Done 2026-08-05 — see `VIM-SDK-BRIDGE-TROUBLESHOOTING.md` / `VIM-OAUTH-TROUBLESHOOTING.md` for the full debugging history |
-| 5 | Encounter writeback (Tier 1) | ⬜ Not started |
+| 5 | Encounter writeback (Tier 1, adapted to `diagnoses`) | ✅ Done 2026-08-11 — "Add to chart" writes to `encounter.diagnoses` via `context.encounter.update()`; see Phase 4 notes and "Writeback plan" below |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
 
 ## Immediate first task
@@ -537,18 +537,24 @@ Still accurate from the original review:
    what's actually writable on a given EHR, not the entity schema alone.
 
    **Confirmed 2026-08-11 against the real Sandbox EHR: Tier 1 as written
-   does not work here.** `manifest.contextWriteback.encounter.update
+   above does not work here.** `manifest.contextWriteback.encounter.update
    .updatableFields` is only `['diagnoses', 'billingInformation
    .procedureCodes']` — no `plan.generalNotes`, no notes/free-text field of
    any kind. The real `encounter_open:encounter` shape (see Phase 4 notes
    above) confirms this: `diagnoses` is `[{code, description}]`, nothing
-   resembling a notes field exists on the entity at all for this EHR. A
-   trial match isn't a diagnosis, so shoehorning it into `diagnoses` is a
-   real semantic mismatch, not just an awkward fit. **For this sandbox EHR,
-   Tier 3 is the practical default, not just the fallback** — Tier 1 stays
-   correct as *written* for EHRs that do expose a notes field, so don't
-   delete it, but don't expect it to apply here without Dave explicitly
-   choosing to write into `diagnoses` anyway.
+   resembling a notes field exists on the entity at all for this EHR.
+
+   **Dave's decision: write into `diagnoses` anyway**, accepting the
+   semantic mismatch (a trial match isn't a diagnosis) rather than fall
+   back to Tier 3 for this EHR. Implemented in `use-chart-context.ts`'s
+   `addTrialToEncounter()`: `encounter.update({ diagnoses: [{ description:
+   ... }] }, { mode: 'append' })`, gated by `getCapability`/`hasPermission`/
+   `requestPermission('update', { fields: ['diagnoses'] })` first. Wired to
+   the "Add to chart" button in `TrialCard.tsx`, enabled only while
+   `encounterOpen` is true (tracked via the `encounter_open:encounter`
+   subscription in `use-chart-context.ts`). Tier 1 stays correct as
+   *written* above for EHRs that do expose a notes field — don't delete it,
+   it's just not what actually shipped for this EHR.
 2. **Tier 2 — pre-fill a Referral** (Phase 6, opportunistic, EHR-dependent).
    Listen for `referral_start` (fires when the *provider* initiates a
    referral natively in the EHR — the app doesn't spawn referrals on its
