@@ -87,6 +87,8 @@ export function useChartContext(): ChartContextState {
 
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
+    let unsubEncounter: (() => void) | undefined;
+    let unsubEncounterPatient: (() => void) | undefined;
 
     (async () => {
       let sdk;
@@ -210,11 +212,38 @@ export function useChartContext(): ChartContextState {
           zip: zip ?? prevState.zip,
         }));
       });
+
+      // DIAGNOSTIC 2026-08-11 — opening an encounter closes chart_open:patient
+      // entirely (curr goes to undefined; confirmed live), which currently
+      // resets our whole picklist/zip while the provider is inside an
+      // encounter. Before fixing that, log both encounter contexts to see
+      // (a) the real Encounter shape, cross-referenced against
+      // manifest.contextWriteback's updatableFields for Phase 5, and (b)
+      // whether patient data is still reachable via encounter_open:patient
+      // once chart_open:patient has closed. Not driving state yet — purely
+      // observational until we know what's actually available.
+      unsubEncounter = sdk.ehr.context.onChange('encounter_open:encounter', (prev, curr) => {
+        console.log('[trial-match:context] encounter_open:encounter changed', {
+          hadPrev: !!prev,
+          hasCurr: !!curr,
+          fields: curr?.fields,
+        });
+      });
+      unsubEncounterPatient = sdk.ehr.context.onChange('encounter_open:patient', (prev, curr) => {
+        console.log('[trial-match:context] encounter_open:patient changed', {
+          hadPrev: !!prev,
+          hasCurr: !!curr,
+          address: curr?.fields?.address,
+          problemsCount: curr?.fields?.problems?.length,
+        });
+      });
     })();
 
     return () => {
       cancelled = true;
       unsubscribe?.();
+      unsubEncounter?.();
+      unsubEncounterPatient?.();
     };
   }, []);
 
