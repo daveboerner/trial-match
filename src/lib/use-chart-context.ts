@@ -162,10 +162,12 @@ export function useChartContext(): ChartContextState {
         if (!rawProblems || rawProblems.length === 0) {
           try {
             const res = await sdk.ehr.api.patient.getProblems();
-            console.log('[trial-match:getProblems] fallback result', {
-              success: res.success,
-              count: res.success ? res.data?.length : undefined,
-            });
+            // Full response, not just {success, count} — the TS type only
+            // declares {success, data}, but a failure may carry an untyped
+            // error/message field at runtime that the type doesn't surface
+            // (same lesson as the encounter shape: don't trust the type over
+            // what's actually on the wire). JSON.stringify so it pastes fully.
+            console.log('[trial-match:getProblems] fallback result', JSON.stringify(res));
             if (res.success) {
               rawProblems = res.data;
             }
@@ -178,10 +180,12 @@ export function useChartContext(): ChartContextState {
         if (!zip) {
           try {
             const res = await sdk.ehr.api.patient.getPatient();
-            console.log('[trial-match:getPatient] fallback result', {
-              success: res.success,
-              zip: res.success ? res.data.address?.zipCode : undefined,
-            });
+            // Full response — see getProblems() comment above. Specifically
+            // watching for this to fail (success: false) inside an
+            // encounter-only context (no chart_open:patient active) - if so,
+            // getPatient()/getProblems() may only resolve against a chart
+            // context, not an encounter one, despite both carrying a patient.
+            console.log('[trial-match:getPatient] fallback result', JSON.stringify(res));
             if (res.success) {
               zip = res.data.address?.zipCode ?? null;
             }
