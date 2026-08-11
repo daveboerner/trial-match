@@ -294,8 +294,6 @@ export function useChartContext(): ChartContextState {
             searchTerm: p.description as string,
           }));
 
-        console.log('[trial-match:context] resolved state', { zip, problemCount: problems.length });
-
         // Sticky fallback for BOTH fields, not just zip: confirmed 2026-08-11
         // this EHR can throw ("No patient is in the current EHR context")
         // rather than cleanly returning empty/success:false when a
@@ -306,11 +304,27 @@ export function useChartContext(): ChartContextState {
         // context" when opening an encounter. Same reasoning as zip: the
         // data hasn't changed just because this particular call couldn't
         // resolve it, so don't regress a known-good list to empty.
-        setState((prevState) => ({
-          status: 'chart-ready',
-          problems: problems.length > 0 ? problems : prevState.problems,
-          zip: zip ?? prevState.zip,
-        }));
+        setState((prevState) => {
+          const resolved = {
+            status: 'chart-ready' as const,
+            problems: problems.length > 0 ? problems : prevState.problems,
+            zip: zip ?? prevState.zip,
+          };
+          // Log the state actually committed, not the raw pre-fallback
+          // `zip`/`problems` locals — logging those directly (as this line
+          // used to) reads as "still losing context" even when the sticky
+          // fallback above is correctly preserving the old values, since a
+          // failed resolve always has raw zip:null/problems:[] regardless of
+          // what ends up on screen. Confirmed 2026-08-11 this was actively
+          // misleading during a real debugging session with Dave.
+          console.log('[trial-match:context] resolved state', {
+            rawZip: zip,
+            rawProblemCount: problems.length,
+            committedZip: resolved.zip,
+            committedProblemCount: resolved.problems.length,
+          });
+          return resolved;
+        });
       }
 
       unsubscribe = sdk.ehr.context.onChange('chart_open:patient', async (prev, curr) => {
