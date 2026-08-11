@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { NormalizedTrial } from '@/types/trial';
 import type { WritebackResult } from '@/lib/use-chart-context';
 
@@ -44,6 +44,18 @@ export function TrialCard({ trial, encounterOpen, addTrialToEncounter }: TrialCa
   const phaseLabel = formatPhases(trial.phases);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Cards stay mounted across encounter transitions (same search results,
+  // different EHR context) — without this, an error from a PREVIOUS
+  // encounter lingers on screen and looks like a fresh failure on the
+  // current one. Reset whenever a (new) encounter becomes available.
+  const wasEncounterOpen = useRef(encounterOpen);
+  useEffect(() => {
+    if (encounterOpen && !wasEncounterOpen.current) {
+      setSaveState('idle');
+      setSaveError(null);
+    }
+    wasEncounterOpen.current = encounterOpen;
+  }, [encounterOpen]);
 
   async function handleAddToChart() {
     setSaveState('saving');
