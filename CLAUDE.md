@@ -195,6 +195,38 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
+### `problems` had no sticky fallback; rapid context bouncing causes a second, different error (found 2026-08-11)
+
+Dave reported still losing patient context on opening an encounter, after
+the zip sticky-fallback fix — root cause was different from that earlier
+fix: `resolvePatientFields`'s `setState` had `zip: zip ?? prevState.zip`
+but just `problems` (no `?? prevState.problems`), so any failed/empty
+resolution reset the picklist to `[]` outright, even though the zip fix
+looked like it should have covered this. Fixed by mirroring the same
+sticky pattern for `problems`.
+
+Also observed in the same session: rapid, seemingly EHR/extension-side
+context bouncing (`encounter_open:encounter` opening/closing/reopening
+across two different encounters within seconds, `chart_open:patient`
+doing the same) causes overlapping in-flight `resolvePatientFields()`
+calls — a slower call for an older context can resolve after a newer one
+and clobber it. Fixed with a `resolveGeneration` counter: each call
+captures its generation number at start and checks it's still current
+before calling `setState`, so a stale result is silently dropped instead
+of applied.
+
+During this same bouncing, `getProblems()`/`getPatient()` threw a THIRD
+distinct error shape not seen before: `SDKError: No "patient" is in the
+current EHR context` — a synchronous, client-side guard (thrown from
+inside `SDKClient.ts`, not an async backend response), distinct from the
+encounter-only 404 documented below. Not yet root-caused whether the
+bouncing itself is something in our code triggering it, or purely the EHR
+sandbox/extension's own polling (the extension's own console showed
+`[RuntimePoll] Backend returned 400` around the same time — worth
+watching for again, but nothing conclusively pins it on us). The
+sticky-fallback + generation-guard fixes make this failure mode harmless
+regardless of its cause, but if it keeps showing up worth a closer look.
+
 ### getPatient() 404s inside encounter-only context; real Encounter shape confirmed (found 2026-08-11)
 
 Opening an encounter closes `chart_open:patient` (`curr -> undefined`) but
