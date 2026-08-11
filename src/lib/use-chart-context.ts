@@ -254,21 +254,27 @@ export function useChartContext(): ChartContextState {
       // API) — falls back to getPatient(), the same no-arg/context-resolved
       // pattern as getProblems(), which is empirically tab-independent.
       //
-      // Bumped on every call so a stale in-flight call can tell it's been
-      // superseded. Confirmed 2026-08-11: rapid chart/encounter transitions
-      // (e.g. bouncing between two encounters) fire multiple context.onChange
-      // events in quick succession, each kicking off its own async
-      // getProblems()/getPatient() round trip — without this, a slower call
-      // for an OLDER context can resolve after a newer one and clobber it
-      // with stale (or, worse, error-empty) data. `cancelled` alone only
-      // guards unmount, not this kind of overlap.
-      let resolveGeneration = 0;
-
+      // REVERTED 2026-08-11 (same day introduced): a generation counter used
+      // to gate this — discard any call whose generation didn't match the
+      // most-recently-DISPATCHED one, to guard against rapid encounter
+      // bouncing. That was backwards for a different, more common case:
+      // chart_open:patient re-fires on ordinary tab navigation (documented
+      // above), and each re-fire's getProblems()/getPatient() round trip
+      // through the extension bridge can complete out of dispatch order.
+      // "Most recently dispatched" is not the same as "most correct" —
+      // confirmed live: a slower call with the CORRECT 2-problem list was
+      // getting discarded as "stale" because a later, redundant re-fire's
+      // call happened to fail/return-empty and complete first, and THAT
+      // empty result won purely by finishing last. Since getProblems()/
+      // getPatient() are context-resolved (no id param) rather than tied to
+      // whichever event triggered them, a "stale" call isn't resolving
+      // wrong-patient data — the sticky fallback below (never let empty
+      // clobber non-empty) is sufficient protection on its own, and doesn't
+      // have this ordering flaw. Only `cancelled` (unmount) still gates.
       async function resolvePatientFields(fields: {
         problems?: { code?: string; status?: string; description?: string }[];
         address?: { zipCode?: string };
       }) {
-        const myGeneration = ++resolveGeneration;
         let rawProblems = fields.problems;
         if (!rawProblems || rawProblems.length === 0) {
           try {
@@ -309,7 +315,7 @@ export function useChartContext(): ChartContextState {
             console.warn('[trial-match:getPatient] fallback threw', err);
           }
         }
-        if (cancelled || myGeneration !== resolveGeneration) return;
+        if (cancelled) return;
 
         const problems: ActiveProblem[] = (rawProblems ?? [])
           .filter((p) => p.description && isActiveStatus(p.status))
