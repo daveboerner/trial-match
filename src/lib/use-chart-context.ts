@@ -163,6 +163,7 @@ export function useChartContext(): ChartContextState {
     let unsubscribe: (() => void) | undefined;
     let unsubEncounter: (() => void) | undefined;
     let unsubEncounterPatient: (() => void) | undefined;
+    let resetTimer: ReturnType<typeof setTimeout> | undefined;
 
     (async () => {
       let sdk: VimSDK;
@@ -174,6 +175,14 @@ export function useChartContext(): ChartContextState {
       }
       if (cancelled) return;
       sdkRef.current = sdk;
+      // Debug hook so a raw sdk.ehr.context.encounter.update() can be run
+      // directly from the console, decoupled from our own encounterOpen
+      // gating/state — useful for isolating whether a writeback failure is
+      // an EHR/extension-side limitation or something in our own call path.
+      // Kept permanently, same reasoning as the manifest log above.
+      if (typeof window !== 'undefined') {
+        (window as unknown as { __trialMatchSdk?: VimSDK }).__trialMatchSdk = sdk;
+      }
 
       // Tells the Hub we're actually ready — without this it shows a "May
       // not be ready" status even once the SDK has genuinely connected
@@ -209,10 +218,26 @@ export function useChartContext(): ChartContextState {
       let hasChartPatient = false;
       let hasEncounterPatient = false;
 
+      // Debounced, not immediate. Confirmed 2026-08-11 against the real
+      // Sandbox EHR: chart_open:patient closing and encounter_open:patient
+      // opening for what is, from the provider's perspective, one
+      // continuous "still looking at this patient" transition are NOT
+      // atomic — chart_open:patient's close callback fires and
+      // hasChartPatient goes false BEFORE encounter_open:patient's open
+      // callback has run, so a synchronous check here sees both flags
+      // false and wipes state, even though the encounter's patient context
+      // is only milliseconds away from becoming active. Waiting briefly and
+      // re-reading the (closure-captured, mutable) flags — not a stale
+      // snapshot — before actually resetting closes that gap without
+      // masking a genuine "no patient anywhere" state, which still resets
+      // correctly once the delay elapses.
       function maybeResetToWaiting() {
-        if (!hasChartPatient && !hasEncounterPatient) {
-          setState({ status: 'waiting-for-chart', problems: [], zip: null });
-        }
+        if (resetTimer) clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => {
+          if (!hasChartPatient && !hasEncounterPatient) {
+            setState({ status: 'waiting-for-chart', problems: [], zip: null });
+          }
+        }, 500);
       }
 
       // Shared by both chart_open:patient and encounter_open:patient — same
@@ -374,6 +399,7 @@ export function useChartContext(): ChartContextState {
 
     return () => {
       cancelled = true;
+      if (resetTimer) clearTimeout(resetTimer);
       unsubscribe?.();
       unsubEncounter?.();
       unsubEncounterPatient?.();
