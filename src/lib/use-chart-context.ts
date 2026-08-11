@@ -119,14 +119,15 @@ export function useChartContext(): ChartContextState {
       //
       // Confirmed 2026-08-11 (via diagnostic logging, since removed — see git
       // history) that this subscription re-fires when the provider switches
-      // EHR tabs, and `address` specifically comes back empty on that
+      // EHR tabs, and inline `address` specifically comes back empty on that
       // re-fire — `problems` (resolved via the real getProblems() API call
-      // below) is unaffected, so this looks like address/zip being sourced
-      // from the Demographics tab's rendered DOM rather than a stable API,
-      // and simply not being available once you navigate away from it. The
-      // patient's zip hasn't actually changed, so we keep the last known-good
-      // value (via the setState updater form) instead of blanking it out
-      // every time a transient update doesn't include it.
+      // below) is unaffected, so inline address looks like it's sourced from
+      // the Demographics tab's rendered DOM rather than a stable API. Both
+      // `problems` and `address` get the same fallback treatment: prefer the
+      // inline context field, fall back to the dedicated no-arg PatientApi
+      // call (getProblems() / getPatient() — both context-resolved, and
+      // empirically confirmed tab-independent for getProblems()) when the
+      // inline field is empty.
       unsubscribe = sdk.ehr.context.onChange('chart_open:patient', async (prev, curr) => {
         if (!curr) {
           setState({ status: 'waiting-for-chart', problems: [], zip: null });
@@ -135,12 +136,6 @@ export function useChartContext(): ChartContextState {
 
         const patient = curr.fields;
 
-        // Confirmed 2026-08-11 against the real Sandbox EHR: chart_open:patient
-        // does NOT populate `problems` inline (it was always undefined, while
-        // `address.zipCode` came through fine) — this EHR needs the dedicated,
-        // context-resolved API instead. Falls back only when the inline field
-        // is empty, since other EHRs may still populate it inline per the
-        // original architecture note.
         let rawProblems = patient.problems;
         if (!rawProblems || rawProblems.length === 0) {
           try {
@@ -150,6 +145,18 @@ export function useChartContext(): ChartContextState {
             }
           } catch (err) {
             console.warn('[trial-match] getProblems() fallback failed:', err);
+          }
+        }
+
+        let zip = patient.address?.zipCode ?? null;
+        if (!zip) {
+          try {
+            const res = await sdk.ehr.api.patient.getPatient();
+            if (res.success) {
+              zip = res.data.address?.zipCode ?? null;
+            }
+          } catch (err) {
+            console.warn('[trial-match] getPatient() fallback failed:', err);
           }
         }
         if (cancelled) return;
@@ -162,10 +169,13 @@ export function useChartContext(): ChartContextState {
             searchTerm: p.description as string,
           }));
 
+        // Belt-and-suspenders: if getPatient() somehow also comes back
+        // without an address, keep the last known-good zip rather than
+        // regressing to null — the patient's zip hasn't actually changed.
         setState((prevState) => ({
           status: 'chart-ready',
           problems,
-          zip: patient.address?.zipCode ?? prevState.zip,
+          zip: zip ?? prevState.zip,
         }));
       });
     })();
