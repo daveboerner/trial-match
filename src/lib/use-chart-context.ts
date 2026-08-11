@@ -122,6 +122,11 @@ export function useChartContext(): ChartContextState {
         }
 
         const patient = curr.fields;
+        // TEMP DEBUG 2026-08-11 — zip populates correctly but problems don't;
+        // logging the raw shape to see what the real Sandbox EHR actually
+        // sends before guessing at a filter/field-name fix. Remove once
+        // diagnosed — see CLAUDE.md Phase 5 notes.
+        console.log('[trial-match debug] raw patient.problems:', JSON.stringify(patient.problems));
         const problems: ActiveProblem[] = (patient.problems ?? [])
           .filter((p) => p.description && isActiveStatus(p.status))
           .map((p, i) => ({
