@@ -142,6 +142,8 @@ export function useChartContext(): ChartContextState {
     let unsubscribe: (() => void) | undefined;
     let unsubEncounter: (() => void) | undefined;
     let unsubEncounterPatient: (() => void) | undefined;
+    let unsubReferralStart: (() => void) | undefined;
+    let unsubReferralSave: (() => void) | undefined;
     let resetTimer: ReturnType<typeof setTimeout> | undefined;
 
     (async () => {
@@ -178,11 +180,13 @@ export function useChartContext(): ChartContextState {
       // this EHR before assuming a field path — don't hardcode one without
       // checking this first.
       const manifest = sdk.ehr.getManifest();
-      console.log('[trial-match] manifest', {
+      // JSON.stringify — contextWriteback showed as a collapsed "{…}" in
+      // every prior paste, hiding whether a `referral` key exists at all.
+      console.log('[trial-match] manifest', JSON.stringify({
         supportedEvents: manifest.supportedEvents?.map((e) => e.id),
         supportedContexts: manifest.supportedContexts?.map((c) => c.contextKey),
         contextWriteback: manifest.contextWriteback,
-      });
+      }));
 
       setState({ status: 'waiting-for-chart', problems: [], zip: null });
 
@@ -374,6 +378,27 @@ export function useChartContext(): ChartContextState {
         }
         await resolvePatientFields(curr.fields);
       });
+
+      // Exploratory only (2026-08-11) — Dave asked whether referral
+      // writeback is viable instead of the Tier 3 clipboard fallback.
+      // manifest.contextWriteback has only ever shown `patient` and
+      // `encounter` keys for this Sandbox EHR, never `referral`, and
+      // referral_start/referral_save had never actually been subscribed to
+      // before now. Logging both to find out: (a) do they fire at all on
+      // this EHR (try the "Referrals" tab), and (b) what does
+      // manifest.contextWriteback.referral (if present) actually allow.
+      unsubReferralStart = sdk.ehr.context.onChange('referral_start:referral', (prev, curr) => {
+        console.log(
+          '[trial-match:context] referral_start:referral changed',
+          JSON.stringify({ hadPrev: !!prev, hasCurr: !!curr, fields: curr?.fields })
+        );
+      });
+      unsubReferralSave = sdk.ehr.context.onChange('referral_save:referral', (prev, curr) => {
+        console.log(
+          '[trial-match:context] referral_save:referral changed',
+          JSON.stringify({ hadPrev: !!prev, hasCurr: !!curr, fields: curr?.fields })
+        );
+      });
     })();
 
     return () => {
@@ -382,6 +407,8 @@ export function useChartContext(): ChartContextState {
       unsubscribe?.();
       unsubEncounter?.();
       unsubEncounterPatient?.();
+      unsubReferralStart?.();
+      unsubReferralSave?.();
     };
   }, []);
 
