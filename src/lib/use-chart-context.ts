@@ -4,6 +4,45 @@ import { MOCK_ACTIVE_PROBLEMS, type ActiveProblem } from './mock-data';
 import { beginAuthorize, getStoredAccessToken } from './vim-auth-client';
 import { connectVimSDKOnce } from './vim-sdk-connection';
 
+// Confirmed 2026-08-11: getProblems()/getPatient() can throw
+// SDKError('ENTITY_NOT_IN_CONTEXT') on the very FIRST chart_open:patient
+// resolution of a fresh connect, not just during rapid transitions — an
+// inherent race between context.onChange telling app code "a patient is
+// in context" and the SDK client's own internal context cache (used by
+// these calls' guard) catching up. The error's own message says "try
+// again", so retry once after a short delay before giving up — this is a
+// real, SDK-acknowledged transient condition, not a bug we're papering
+// over.
+//
+// `SDKError` is documented in the package's .d.ts (with a `code` field)
+// but is NOT actually exported at runtime — confirmed by grepping the
+// real dist/index.mjs export list, which has only the zod schemas plus
+// getVimSDK/getWorkerVimSDK/initVimSDK/initWorkerVimSDK. The real error
+// class lives inside the dynamically-loaded core-sdk script, not this npm
+// package, so `instanceof SDKError` isn't possible — duck-type on `.code`
+// instead. Another instance of this project's running lesson: verify
+// against the real runtime module, not just the type declarations.
+function isEntityNotInContextError(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && err.code === 'ENTITY_NOT_IN_CONTEXT';
+}
+
+async function callWithContextRetry<T>(fn: () => Promise<T>, label: string): Promise<T | undefined> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (isEntityNotInContextError(err) && attempt === 0) {
+        console.warn(`[trial-match:${label}] fallback threw ENTITY_NOT_IN_CONTEXT, retrying in 300ms`, err);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        continue;
+      }
+      console.warn(`[trial-match:${label}] fallback threw`, err);
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 export type ChartStatus = 'standalone' | 'waiting-for-chart' | 'chart-ready';
 
 export interface ChartContextState {
@@ -217,42 +256,37 @@ export function useChartContext(): ChartContextState {
       }) {
         let rawProblems = fields.problems;
         if (!rawProblems || rawProblems.length === 0) {
-          try {
-            const res = await sdk.ehr.api.patient.getProblems();
-            // Full response, not just {success, count} — the TS type only
-            // declares {success, data}, but a failure may carry an untyped
-            // error/message field at runtime that the type doesn't surface
-            // (same lesson as the encounter shape: don't trust the type over
-            // what's actually on the wire). JSON.stringify so it pastes fully.
+          const res = await callWithContextRetry(() => sdk.ehr.api.patient.getProblems(), 'getProblems');
+          // Full response, not just {success, count} — the TS type only
+          // declares {success, data}, but a failure may carry an untyped
+          // error/message field at runtime that the type doesn't surface
+          // (same lesson as the encounter shape: don't trust the type over
+          // what's actually on the wire). JSON.stringify so it pastes fully.
+          if (res) {
             console.log('[trial-match:getProblems] fallback result', JSON.stringify(res));
             if (res.success) {
               rawProblems = res.data;
             }
-          } catch (err) {
-            console.warn('[trial-match:getProblems] fallback threw', err);
           }
         }
 
         let zip = fields.address?.zipCode ?? null;
         if (!zip) {
-          try {
-            const res = await sdk.ehr.api.patient.getPatient();
-            // Full response — see getProblems() comment above. Confirmed
-            // 2026-08-11 against the real Sandbox EHR: this 404s
-            // ({success:false, statusCode:404}) when only
-            // encounter_open:patient is active with no chart_open:patient —
-            // getPatient() resolves against a chart context specifically,
-            // not an encounter one, even though the encounter carries a
-            // patient too. Not fixable client-side; the `zip ?? prevState.zip`
-            // fallback below covers the common case (chart opened before the
-            // encounter). Only a genuinely chart-never-opened encounter has
-            // no zip available at all.
+          // Confirmed 2026-08-11 against the real Sandbox EHR: this 404s
+          // ({success:false, statusCode:404}) when only
+          // encounter_open:patient is active with no chart_open:patient —
+          // getPatient() resolves against a chart context specifically,
+          // not an encounter one, even though the encounter carries a
+          // patient too. Not fixable client-side; the `zip ?? prevState.zip`
+          // fallback below covers the common case (chart opened before the
+          // encounter). Only a genuinely chart-never-opened encounter has
+          // no zip available at all.
+          const res = await callWithContextRetry(() => sdk.ehr.api.patient.getPatient(), 'getPatient');
+          if (res) {
             console.log('[trial-match:getPatient] fallback result', JSON.stringify(res));
             if (res.success) {
               zip = res.data.address?.zipCode ?? null;
             }
-          } catch (err) {
-            console.warn('[trial-match:getPatient] fallback threw', err);
           }
         }
         if (cancelled) return;
