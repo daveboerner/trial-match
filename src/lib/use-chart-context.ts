@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { VimSDK } from '@vimconnect/app-sdk';
 import { MOCK_ACTIVE_PROBLEMS, type ActiveProblem } from './mock-data';
 import { beginAuthorize, getStoredAccessToken } from './vim-auth-client';
 import { connectVimSDKOnce } from './vim-sdk-connection';
@@ -91,7 +92,7 @@ export function useChartContext(): ChartContextState {
     let unsubEncounterPatient: (() => void) | undefined;
 
     (async () => {
-      let sdk;
+      let sdk: VimSDK;
       try {
         sdk = await connectVimSDKOnce(accessToken);
       } catch (err) {
@@ -123,44 +124,41 @@ export function useChartContext(): ChartContextState {
 
       setState({ status: 'waiting-for-chart', problems: [], zip: null });
 
-      // context.onChange, not workflow.on('chart_open', ...) — workflow
-      // events are one-shot triggers that only fire on the *next* open
-      // transition, so if a patient was already in context before our
-      // multi-step OAuth redirect finished, we'd miss that one-time event and
-      // get stuck in 'waiting-for-chart' forever (hit this for real
-      // 2026-08-05). context subscriptions sync with the *current* state
-      // immediately on subscribing, matching the official quick-start guide's
-      // own pattern. Note the different shape: data arrives as
-      // { fields: Partial<Patient> }, not the patient object directly like
-      // the workflow event gave us.
-      //
-      // Confirmed 2026-08-11 (via diagnostic logging, since removed — see git
-      // history) that this subscription re-fires when the provider switches
-      // EHR tabs, and inline `address` specifically comes back empty on that
-      // re-fire — `problems` (resolved via the real getProblems() API call
-      // below) is unaffected, so inline address looks like it's sourced from
-      // the Demographics tab's rendered DOM rather than a stable API. Both
-      // `problems` and `address` get the same fallback treatment: prefer the
-      // inline context field, fall back to the dedicated no-arg PatientApi
-      // call (getProblems() / getPatient() — both context-resolved, and
-      // empirically confirmed tab-independent for getProblems()) when the
-      // inline field is empty.
-      unsubscribe = sdk.ehr.context.onChange('chart_open:patient', async (prev, curr) => {
-        console.log('[trial-match:context] chart_open:patient changed', {
-          hadPrev: !!prev,
-          hasCurr: !!curr,
-          inlineAddress: curr?.fields?.address,
-          inlineProblemsCount: curr?.fields?.problems?.length,
-        });
+      // Two separate patient contexts can each carry the patient — chart_open:
+      // patient while just a chart is open, encounter_open:patient once an
+      // encounter is opened. Confirmed live 2026-08-11: opening an encounter
+      // closes chart_open:patient entirely (curr -> undefined). Tracking both
+      // independently and only falling back to 'waiting-for-chart' when
+      // NEITHER is active avoids resetting the whole picklist/zip on that
+      // transition (there's still a brief flicker possible depending on
+      // event ordering, but no lasting reset).
+      let hasChartPatient = false;
+      let hasEncounterPatient = false;
 
-        if (!curr) {
+      function maybeResetToWaiting() {
+        if (!hasChartPatient && !hasEncounterPatient) {
           setState({ status: 'waiting-for-chart', problems: [], zip: null });
-          return;
         }
+      }
 
-        const patient = curr.fields;
-
-        let rawProblems = patient.problems;
+      // Shared by both chart_open:patient and encounter_open:patient — same
+      // data shape (TypedContextData<Patient>), same fallback needs. context
+      // subscriptions sync with the *current* state immediately on
+      // subscribing (unlike workflow.on('chart_open', ...), which is a
+      // one-shot trigger for the *next* open and would miss a patient already
+      // in context — hit this for real 2026-08-05).
+      //
+      // Confirmed 2026-08-11 against the real Sandbox EHR: inline `problems`
+      // is never populated (this EHR needs the dedicated getProblems() API
+      // instead), and inline `address` disappears specifically when
+      // navigating off the Demographics tab (looks DOM-sourced, not a stable
+      // API) — falls back to getPatient(), the same no-arg/context-resolved
+      // pattern as getProblems(), which is empirically tab-independent.
+      async function resolvePatientFields(fields: {
+        problems?: { code?: string; status?: string; description?: string }[];
+        address?: { zipCode?: string };
+      }) {
+        let rawProblems = fields.problems;
         if (!rawProblems || rawProblems.length === 0) {
           try {
             const res = await sdk.ehr.api.patient.getProblems();
@@ -176,7 +174,7 @@ export function useChartContext(): ChartContextState {
           }
         }
 
-        let zip = patient.address?.zipCode ?? null;
+        let zip = fields.address?.zipCode ?? null;
         if (!zip) {
           try {
             const res = await sdk.ehr.api.patient.getPatient();
@@ -211,31 +209,49 @@ export function useChartContext(): ChartContextState {
           problems,
           zip: zip ?? prevState.zip,
         }));
-      });
+      }
 
-      // DIAGNOSTIC 2026-08-11 — opening an encounter closes chart_open:patient
-      // entirely (curr goes to undefined; confirmed live), which currently
-      // resets our whole picklist/zip while the provider is inside an
-      // encounter. Before fixing that, log both encounter contexts to see
-      // (a) the real Encounter shape, cross-referenced against
-      // manifest.contextWriteback's updatableFields for Phase 5, and (b)
-      // whether patient data is still reachable via encounter_open:patient
-      // once chart_open:patient has closed. Not driving state yet — purely
-      // observational until we know what's actually available.
-      unsubEncounter = sdk.ehr.context.onChange('encounter_open:encounter', (prev, curr) => {
-        console.log('[trial-match:context] encounter_open:encounter changed', {
+      unsubscribe = sdk.ehr.context.onChange('chart_open:patient', async (prev, curr) => {
+        console.log('[trial-match:context] chart_open:patient changed', {
           hadPrev: !!prev,
           hasCurr: !!curr,
-          fields: curr?.fields,
+          inlineAddress: curr?.fields?.address,
+          inlineProblemsCount: curr?.fields?.problems?.length,
         });
+        hasChartPatient = !!curr;
+        if (!curr) {
+          maybeResetToWaiting();
+          return;
+        }
+        await resolvePatientFields(curr.fields);
       });
-      unsubEncounterPatient = sdk.ehr.context.onChange('encounter_open:patient', (prev, curr) => {
+
+      // The Encounter shape here is what Phase 5 (writeback) needs —
+      // cross-reference against manifest.contextWriteback's updatableFields
+      // (confirmed for this EHR: encounter.update only allows `diagnoses`
+      // and `billingInformation.procedureCodes`, no notes/plan field at all).
+      // JSON.stringify so the full contents show in copy-pasted console
+      // output — an unexpanded object reference pastes as "{...}", useless.
+      unsubEncounter = sdk.ehr.context.onChange('encounter_open:encounter', (prev, curr) => {
+        console.log(
+          '[trial-match:context] encounter_open:encounter changed',
+          JSON.stringify({ hadPrev: !!prev, hasCurr: !!curr, fields: curr?.fields })
+        );
+      });
+
+      unsubEncounterPatient = sdk.ehr.context.onChange('encounter_open:patient', async (prev, curr) => {
         console.log('[trial-match:context] encounter_open:patient changed', {
           hadPrev: !!prev,
           hasCurr: !!curr,
-          address: curr?.fields?.address,
-          problemsCount: curr?.fields?.problems?.length,
+          inlineAddress: curr?.fields?.address,
+          inlineProblemsCount: curr?.fields?.problems?.length,
         });
+        hasEncounterPatient = !!curr;
+        if (!curr) {
+          maybeResetToWaiting();
+          return;
+        }
+        await resolvePatientFields(curr.fields);
       });
     })();
 
