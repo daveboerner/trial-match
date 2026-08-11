@@ -160,7 +160,12 @@ export default function Home() {
                 </p>
                 <div className="trial-grid">
                   {results.map((trial) => (
-                    <TrialCard key={trial.nctId} trial={trial} />
+                    <TrialCard
+                      key={trial.nctId}
+                      trial={trial}
+                      encounterOpen={chart.encounterOpen}
+                      addTrialToEncounter={chart.addTrialToEncounter}
+                    />
                   ))}
                 </div>
               </>

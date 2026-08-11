@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import type { VimSDK } from '@vimconnect/app-sdk';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ContextWritebackNamespace, VimSDK } from '@vimconnect/app-sdk';
 import { MOCK_ACTIVE_PROBLEMS, type ActiveProblem } from './mock-data';
 import { beginAuthorize, getStoredAccessToken } from './vim-auth-client';
 import { connectVimSDKOnce } from './vim-sdk-connection';
@@ -12,6 +12,21 @@ export interface ChartContextState {
   problems: ActiveProblem[];
   /** Patient zip, sourced from the chart_open event. Null until 'chart-ready' (or if the EHR doesn't supply it). */
   zip: string | null;
+  /** True while an encounter is open in the EHR — gates the "Add to chart" writeback button. */
+  encounterOpen: boolean;
+  /**
+   * Writes a trial into the open encounter's `diagnoses` field (append mode —
+   * see CLAUDE.md "Writeback plan" for why `diagnoses` despite the semantic
+   * mismatch: it's the only structured field this Sandbox EHR exposes via
+   * contextWriteback, there's no notes/plan field at all). Returns a result
+   * object rather than throwing, so the caller can show an inline message.
+   */
+  addTrialToEncounter: (trial: { nctId: string; title: string; url: string }) => Promise<WritebackResult>;
+}
+
+export interface WritebackResult {
+  success: boolean;
+  error?: string;
 }
 
 // `problems[].status` has no fixed enum in the SDK — it's passed through verbatim
@@ -23,7 +38,14 @@ function isActiveStatus(status?: string): boolean {
   return !status || !INACTIVE_STATUSES.has(status.toLowerCase());
 }
 
-const INITIAL_STATE: ChartContextState = {
+// `encounterOpen` and `addTrialToEncounter` are tracked separately from this
+// core state (see sdkRef/encounterOpen below) rather than folded in here —
+// most of the setState calls below fully replace the state object, and
+// threading an unrelated writeback-availability flag through every one of
+// them would be easy to accidentally reset.
+type CoreState = Omit<ChartContextState, 'encounterOpen' | 'addTrialToEncounter'>;
+
+const INITIAL_STATE: CoreState = {
   status: 'standalone',
   problems: MOCK_ACTIVE_PROBLEMS,
   zip: null,
@@ -50,7 +72,12 @@ const INITIAL_STATE: ChartContextState = {
  *    mock/standalone default (INITIAL_STATE).
  */
 export function useChartContext(): ChartContextState {
-  const [state, setState] = useState<ChartContextState>(INITIAL_STATE);
+  const [state, setState] = useState<CoreState>(INITIAL_STATE);
+  const [encounterOpen, setEncounterOpen] = useState(false);
+  // Holds the connected SDK so addTrialToEncounter (stable across renders,
+  // called from a button click far outside the connect effect below) can
+  // reach it without needing to be recreated every time the effect reruns.
+  const sdkRef = useRef<VimSDK | null>(null);
   // Guards against the effect running more than once for the same mount
   // (React can double-invoke effects). Without this, beginAuthorize() would
   // fire twice with the same launch_id — Vim's authorize endpoint treats a
@@ -59,6 +86,52 @@ export function useChartContext(): ChartContextState {
   // with it. Confirmed against the reference vim-demo-app, which guards the
   // same way for the same stated reason.
   const startedRef = useRef(false);
+
+  // 2026-08-11: Dave chose "write into diagnoses anyway" (Tier 1, adapted)
+  // over the Tier 3 print/copy fallback, despite the semantic mismatch — see
+  // CLAUDE.md "Writeback plan" for the full reasoning. `diagnoses` (not
+  // `assessment.diagnoses`) is the field manifest.contextWriteback actually
+  // lists as updatable for this Sandbox EHR, confirmed against the real
+  // encounter_open:encounter payload shape.
+  const addTrialToEncounter = useCallback(async (trial: { nctId: string; title: string; url: string }): Promise<WritebackResult> => {
+    const sdk = sdkRef.current;
+    if (!sdk) {
+      return { success: false, error: 'Not connected to Vim' };
+    }
+
+    // Typed as a generic index-signature union in the SDK's .d.ts (entity
+    // namespaces are dynamically present per the manifest) — cast to the
+    // concrete writeback interface to get real getCapability/update typing.
+    const encounter = sdk.ehr.context.encounter as unknown as ContextWritebackNamespace;
+
+    const cap = encounter.getCapability('update', { fields: ['diagnoses'] });
+    if (!cap.available) {
+      console.warn('[trial-match:writeback] not available', cap);
+      return { success: false, error: cap.reason ?? 'Writeback not available for this field' };
+    }
+
+    if (!encounter.hasPermission('update', { fields: ['diagnoses'] })) {
+      const granted = await encounter.requestPermission('update', { fields: ['diagnoses'] });
+      if (granted !== 'granted') {
+        return { success: false, error: 'Permission denied' };
+      }
+    }
+
+    try {
+      const result = await encounter.update(
+        { diagnoses: [{ description: `Clinical trial candidate: ${trial.title} (${trial.nctId}) — ${trial.url}` }] },
+        { mode: 'append' }
+      );
+      console.log('[trial-match:writeback] encounter.update result', JSON.stringify(result));
+      if (!result.success) {
+        return { success: false, error: result.error ?? 'Update rejected' };
+      }
+      return { success: true };
+    } catch (err) {
+      console.warn('[trial-match:writeback] encounter.update threw', err);
+      return { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
+    }
+  }, []);
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -100,6 +173,7 @@ export function useChartContext(): ChartContextState {
         return;
       }
       if (cancelled) return;
+      sdkRef.current = sdk;
 
       // Tells the Hub we're actually ready — without this it shows a "May
       // not be ready" status even once the SDK has genuinely connected
@@ -246,6 +320,7 @@ export function useChartContext(): ChartContextState {
           '[trial-match:context] encounter_open:encounter changed',
           JSON.stringify({ hadPrev: !!prev, hasCurr: !!curr, fields: curr?.fields })
         );
+        setEncounterOpen(!!curr);
       });
 
       unsubEncounterPatient = sdk.ehr.context.onChange('encounter_open:patient', async (prev, curr) => {
@@ -272,5 +347,5 @@ export function useChartContext(): ChartContextState {
     };
   }, []);
 
-  return state;
+  return { ...state, encounterOpen, addTrialToEncounter };
 }

@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { NormalizedTrial } from '@/types/trial';
+import type { WritebackResult } from '@/lib/use-chart-context';
 
 const STATUS_LABEL: Record<string, string> = {
   RECRUITING: 'Recruiting',
@@ -28,10 +30,32 @@ function formatPhases(phases: string[]): string | null {
   return phases.map((p) => p.replace('PHASE', 'Phase ')).join(', ');
 }
 
-export function TrialCard({ trial }: { trial: NormalizedTrial }) {
+interface TrialCardProps {
+  trial: NormalizedTrial;
+  encounterOpen: boolean;
+  addTrialToEncounter: (trial: { nctId: string; title: string; url: string }) => Promise<WritebackResult>;
+}
+
+type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+
+export function TrialCard({ trial, encounterOpen, addTrialToEncounter }: TrialCardProps) {
   const location = trial.nearestLocation;
   const otherCount = trial.nearbyLocations.length - (location ? 1 : 0);
   const phaseLabel = formatPhases(trial.phases);
+  const [saveState, setSaveState] = useState<SaveState>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function handleAddToChart() {
+    setSaveState('saving');
+    setSaveError(null);
+    const result = await addTrialToEncounter(trial);
+    if (result.success) {
+      setSaveState('saved');
+    } else {
+      setSaveState('error');
+      setSaveError(result.error ?? 'Failed to add to chart');
+    }
+  }
 
   return (
     <article className="trial-card">
@@ -104,9 +128,15 @@ export function TrialCard({ trial }: { trial: NormalizedTrial }) {
         <a className="trial-link" href={trial.url} target="_blank" rel="noreferrer">
           View on ClinicalTrials.gov ↗
         </a>
-        <button className="trial-save-btn" disabled title="Available once connected to a chart (Phase 5)">
-          Add to chart
+        <button
+          className="trial-save-btn"
+          disabled={!encounterOpen || saveState === 'saving' || saveState === 'saved'}
+          title={encounterOpen ? undefined : 'Open a patient encounter in the EHR to add trials to the chart'}
+          onClick={handleAddToChart}
+        >
+          {saveState === 'saving' ? 'Adding…' : saveState === 'saved' ? 'Added ✓' : 'Add to chart'}
         </button>
+        {saveState === 'error' && <p className="trial-save-error">{saveError}</p>}
       </footer>
     </article>
   );

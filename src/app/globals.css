@@ -269,3 +269,16 @@ body {
   color: var(--muted);
   cursor: not-allowed;
 }
+
+.trial-save-btn:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  cursor: pointer;
+}
+
+.trial-save-error {
+  font-size: 0.75rem;
+  color: #c0392b;
+  margin-top: 0.4rem;
+}
