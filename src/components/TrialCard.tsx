@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import type { NormalizedTrial } from '@/types/trial';
-import type { WritebackResult } from '@/lib/use-chart-context';
 
 const STATUS_LABEL: Record<string, string> = {
   RECRUITING: 'Recruiting',
@@ -32,41 +31,53 @@ function formatPhases(phases: string[]): string | null {
 
 interface TrialCardProps {
   trial: NormalizedTrial;
-  encounterOpen: boolean;
-  addTrialToEncounter: (trial: { nctId: string; title: string; url: string }) => Promise<WritebackResult>;
 }
 
-type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+type CopyState = 'idle' | 'copied' | 'error';
 
-export function TrialCard({ trial, encounterOpen, addTrialToEncounter }: TrialCardProps) {
+// Tier 3 writeback (see CLAUDE.md "Writeback plan"): a plain copyable
+// summary, always available regardless of EHR capability. Tier 1
+// (structured encounter.update()) was tried first and confirmed a
+// structural dead end for this EHR — the diagnoses field does a real
+// ICD-10 lookup and overwrites any custom text, and no other encounter
+// field is writable at all. This has no SDK/encounter dependency, so it
+// works standalone too.
+function formatTrialSummary(trial: NormalizedTrial): string {
+  const location = trial.nearestLocation;
+  const lines = [
+    `Clinical trial candidate: ${trial.title} (${trial.nctId})`,
+    `Matched on: ${trial.matchedCondition}`,
+  ];
+  if (trial.sponsor) lines.push(`Sponsor: ${trial.sponsor}`);
+  if (location) {
+    lines.push(
+      `Site: ${[location.facility, location.city, location.state].filter(Boolean).join(', ')}`
+    );
+    if (location.phone) lines.push(`Contact: ${location.phone}`);
+    if (location.email) lines.push(`Contact: ${location.email}`);
+  } else if (trial.centralContact) {
+    const c = trial.centralContact;
+    lines.push(`Contact: ${[c.name, c.phone, c.email].filter(Boolean).join(', ')}`);
+  }
+  lines.push(trial.url);
+  return lines.join('\n');
+}
+
+export function TrialCard({ trial }: TrialCardProps) {
   const location = trial.nearestLocation;
   const otherCount = trial.nearbyLocations.length - (location ? 1 : 0);
   const phaseLabel = formatPhases(trial.phases);
-  const [saveState, setSaveState] = useState<SaveState>('idle');
-  const [saveError, setSaveError] = useState<string | null>(null);
-  // Cards stay mounted across encounter transitions (same search results,
-  // different EHR context) — without this, an error from a PREVIOUS
-  // encounter lingers on screen and looks like a fresh failure on the
-  // current one. Reset whenever a (new) encounter becomes available.
-  const wasEncounterOpen = useRef(encounterOpen);
-  useEffect(() => {
-    if (encounterOpen && !wasEncounterOpen.current) {
-      setSaveState('idle');
-      setSaveError(null);
-    }
-    wasEncounterOpen.current = encounterOpen;
-  }, [encounterOpen]);
+  const [copyState, setCopyState] = useState<CopyState>('idle');
 
   async function handleAddToChart() {
-    setSaveState('saving');
-    setSaveError(null);
-    const result = await addTrialToEncounter(trial);
-    if (result.success) {
-      setSaveState('saved');
-    } else {
-      setSaveState('error');
-      setSaveError(result.error ?? 'Failed to add to chart');
+    try {
+      await navigator.clipboard.writeText(formatTrialSummary(trial));
+      setCopyState('copied');
+    } catch (err) {
+      console.warn('[trial-match] clipboard write failed', err);
+      setCopyState('error');
     }
+    setTimeout(() => setCopyState('idle'), 2000);
   }
 
   return (
@@ -142,13 +153,12 @@ export function TrialCard({ trial, encounterOpen, addTrialToEncounter }: TrialCa
         </a>
         <button
           className="trial-save-btn"
-          disabled={!encounterOpen || saveState === 'saving' || saveState === 'saved'}
-          title={encounterOpen ? undefined : 'Open a patient encounter in the EHR to add trials to the chart'}
+          title="Copy a summary of this trial to paste into the chart"
           onClick={handleAddToChart}
         >
-          {saveState === 'saving' ? 'Adding…' : saveState === 'saved' ? 'Added ✓' : 'Add to chart'}
+          {copyState === 'copied' ? 'Copied ✓' : 'Add to chart'}
         </button>
-        {saveState === 'error' && <p className="trial-save-error">{saveError}</p>}
+        {copyState === 'error' && <p className="trial-save-error">Could not copy to clipboard</p>}
       </footer>
     </article>
   );

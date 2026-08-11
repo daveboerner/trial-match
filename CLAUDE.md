@@ -195,6 +195,35 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
+### diagnoses writeback confirmed structurally unusable for this feature — switch to Tier 3 (resolved 2026-08-11)
+
+Follow-up to the finding directly below: with a real ICD-10 code
+(`E11.65`), `encounter.update({ diagnoses: [{ code: 'E11.65',
+description: 'TEST — manual console writeback' }] }, { mode: 'append' })`
+returned `{success: true}` and DID add a new diagnosis row in the
+Assessments panel. But the committed data (confirmed via the
+`encounter_open:encounter` log and a screenshot) was `{"code":"E11.65",
+"description":"Type 2 Diabetes Mellitus with hyperglycemia"}` — the real,
+canonical ICD-10 description for that code, NOT the free text we sent.
+The write mechanism does a genuine code lookup and overwrites
+`description` with the code's official clinical name; our custom text
+never lands anywhere, including the separate "Note for this diagnosis"
+UI field (which isn't backed by anything in the `Diagnosis` type at all —
+that type is only `{code, status, system, onSetDate, description}`, no
+notes field, and `assessment.generalNotes`, which does exist on the
+`Encounter` schema, isn't in this EHR's writable-fields list either).
+
+**Conclusion: `diagnoses` cannot carry "clinical trial candidate: NCT...,
+site..." info on this EHR under any payload shape** — it only accepts
+real diagnosis codes and always displays their real names, and needs a
+valid code just to get the automation to succeed at all (confirmed
+earlier: code-less attempts fail with `Click target not found:
+#vc-encounter-icd-search div.input`). This isn't friction to push
+through, it's a structural dead end for this specific use case. Switch
+"Add to chart" to Tier 3 (printable/copyable summary) for this EHR —
+supersedes Dave's earlier "write into diagnoses anyway" choice, made
+before this was known.
+
 ### diagnoses writeback is DOM automation against a real ICD-10 search widget, not a data write (found 2026-08-11)
 
 Testing `sdk.ehr.context.encounter.update({ diagnoses: [...] }, { mode:
