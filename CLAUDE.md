@@ -195,6 +195,58 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
+### getPatient() 404s inside encounter-only context; real Encounter shape confirmed (found 2026-08-11)
+
+Opening an encounter closes `chart_open:patient` (`curr -> undefined`) but
+fires `encounter_open:patient`. In that encounter-only state (no
+`chart_open:patient` ever fired, or already closed), `getPatient()`
+returns `{success:false, statusCode:404, reason:"HTTP 404 — Not found"}`
+— confirmed via full-response logging (`JSON.stringify`, not just
+`{success, zip}`, since the typed `ApiResponse<T>` only declares
+`{success, data}` and would have hidden this). `getProblems()` in the
+same context returns `{success:true, data:[]}` instead of erroring —
+ambiguous whether that's a genuinely empty list or the same resolution
+gap surfacing differently.
+
+**Conclusion: `getPatient()`/`getProblems()` resolve against a chart
+context specifically, not an encounter one, even though the encounter
+also carries a patient.** This is a backend/EHR constraint, not
+something fixable client-side — don't try to add another fallback layer
+for it. The existing `zip: zip ?? prevState.zip` sticky fallback in
+`resolvePatientFields` already covers the realistic case (chart opened
+at some point before the encounter); only a chart-never-opened encounter
+has genuinely no zip available, and that's expected, not a bug.
+
+This also matters for the earlier "why not just call the API directly
+instead of subscribing to context" question (Dave, 2026-08-11): the
+answer isn't a blanket "always call the API" — direct API resolution
+itself is scoped per context type (chart vs. encounter), same as inline
+fields are. `context.onChange` is still required both as the
+availability/lifecycle signal *and* because which resolution path even
+works depends on which context fired.
+
+Real `encounter_open:encounter` shape (finally captured via the
+JSON.stringify'd log, unblocking the Phase 5 decision below):
+
+```json
+{
+  "id": "d2b6720a-217f-41f5-9a5c-179b580cf27a",
+  "isSigned": "open",
+  "dateOfService": "2026-07-28",
+  "cc": "Diabetes follow-up — blood sugar control",
+  "type": "follow_up",
+  "diagnoses": [{"code": "E11.9", "description": "Type 2 Diabetes Mellitus, without complications"}],
+  "identifiers": {"ehrEncounterId": "..."},
+  "provider": {"firstName": "Sarah", "lastName": "Chen"}
+}
+```
+
+`diagnoses: [{code, description}]` matches
+`manifest.contextWriteback.encounter.update.updatableFields` (`diagnoses`,
+`billingInformation.procedureCodes`) — see "Writeback plan" section below.
+No notes/plan/free-text field exists on this entity at all, writable or
+not — `cc` is present but not in the writable-fields list.
+
 ### App registration — infra done 2026-07-31; Vim-side registration form still to submit
 
 - **Hosting:** Vercel, connected to the GitHub repo below. Production URL
@@ -483,6 +535,20 @@ Still accurate from the original review:
    worth double-checking against `getCapability('update')`'s actual
    `updatableFields` at Phase 5 time — that's the authoritative source for
    what's actually writable on a given EHR, not the entity schema alone.
+
+   **Confirmed 2026-08-11 against the real Sandbox EHR: Tier 1 as written
+   does not work here.** `manifest.contextWriteback.encounter.update
+   .updatableFields` is only `['diagnoses', 'billingInformation
+   .procedureCodes']` — no `plan.generalNotes`, no notes/free-text field of
+   any kind. The real `encounter_open:encounter` shape (see Phase 4 notes
+   above) confirms this: `diagnoses` is `[{code, description}]`, nothing
+   resembling a notes field exists on the entity at all for this EHR. A
+   trial match isn't a diagnosis, so shoehorning it into `diagnoses` is a
+   real semantic mismatch, not just an awkward fit. **For this sandbox EHR,
+   Tier 3 is the practical default, not just the fallback** — Tier 1 stays
+   correct as *written* for EHRs that do expose a notes field, so don't
+   delete it, but don't expect it to apply here without Dave explicitly
+   choosing to write into `diagnoses` anyway.
 2. **Tier 2 — pre-fill a Referral** (Phase 6, opportunistic, EHR-dependent).
    Listen for `referral_start` (fires when the *provider* initiates a
    referral natively in the EHR — the app doesn't spawn referrals on its

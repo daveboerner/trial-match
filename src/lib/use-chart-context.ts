@@ -180,11 +180,16 @@ export function useChartContext(): ChartContextState {
         if (!zip) {
           try {
             const res = await sdk.ehr.api.patient.getPatient();
-            // Full response — see getProblems() comment above. Specifically
-            // watching for this to fail (success: false) inside an
-            // encounter-only context (no chart_open:patient active) - if so,
-            // getPatient()/getProblems() may only resolve against a chart
-            // context, not an encounter one, despite both carrying a patient.
+            // Full response — see getProblems() comment above. Confirmed
+            // 2026-08-11 against the real Sandbox EHR: this 404s
+            // ({success:false, statusCode:404}) when only
+            // encounter_open:patient is active with no chart_open:patient —
+            // getPatient() resolves against a chart context specifically,
+            // not an encounter one, even though the encounter carries a
+            // patient too. Not fixable client-side; the `zip ?? prevState.zip`
+            // fallback below covers the common case (chart opened before the
+            // encounter). Only a genuinely chart-never-opened encounter has
+            // no zip available at all.
             console.log('[trial-match:getPatient] fallback result', JSON.stringify(res));
             if (res.success) {
               zip = res.data.address?.zipCode ?? null;
