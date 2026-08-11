@@ -406,12 +406,15 @@ type in the SDK's own `.d.ts`: the event carries `patient.problems[]`
 `patient.address` (`{city, state, zipCode, address1, address2}`, all
 optional), plus `demographics`, `allergies`, `insurances`, `labResults`,
 `contactInfo`, `identifiers`, `pcp` — all inline, all optional (an EHR may
-not populate any given field). This means Phase 4 didn't need a
-`getProblems()`/`getDemographics()` follow-up call at all for what Trial
-Match uses (see `use-chart-context.ts`). `sdk.ehr.api.patient.getProblems()`
-still exists as a real, no-arg (context-resolved) fallback API — worth
-adding *only if* a specific EHR turns out not to populate `problems`
-inline on `chart_open` (not yet observed either way).
+not populate any given field). **Confirmed 2026-08-11 against the real
+Sandbox EHR: it does NOT populate `problems` inline** — it was
+consistently `undefined` while `address.zipCode` came through fine on
+the same event. `use-chart-context.ts` now calls
+`sdk.ehr.api.patient.getProblems()` (no-arg, context-resolved) as a
+fallback whenever the inline field is empty. Still unverified: whether
+any *other* EHR actually does populate `problems` inline — the fallback
+is written to prefer the inline value when present, so that case should
+still work without the extra round-trip, but hasn't been observed either.
 - `sdk.ehr.workflow.on(eventTypes, callback)` takes a *typed* event name
   or array (`'chart_open' | 'encounter_open' | 'referral_start' |
   'referral_save' | 'order_select' | 'order_sign'`, per `EventTypeSchema`)
