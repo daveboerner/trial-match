@@ -195,6 +195,42 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
+### Referral writeback confirmed not configured at all on this Sandbox EHR (resolved 2026-08-11)
+
+Dave asked whether referral writeback (Tier 2) beats the Tier 3 clipboard
+fallback. Two separate questions, both now answered:
+
+1. **Can the app create a referral?** No — grepped the full SDK `.d.ts`
+   for every referral-related method: only `referral_start`/
+   `referral_save` context events (fire when the *provider* manually
+   starts/saves one) and `getReferral`/`updateReferralById` (act on an
+   EXISTING referral by id). Nothing creates one from app code.
+2. **Is referral writeback configured on this EHR at all?** No.
+   `manifest.contextWriteback` (now logged with `JSON.stringify`, no
+   longer a collapsed object) is `{patient: {update: {available:true,
+   disruptive:true, updatableFields:["demographics"]}}, encounter:
+   {update: {... ["diagnoses","billingInformation.procedureCodes"]}}}` —
+   **no `referral` key at all.** `updateReferralById()` is explicitly
+   documented as gated by "the manifest" too ("throws error if operation
+   is marked as disruptive in manifest"), so it's not a way around this —
+   same wall, different door.
+
+Confirmed via screenshot: this Sandbox EHR's native "New Referral" form
+does have a genuine free-text "Clinical Notes" field, which would have
+been a perfect fit — but with no writeback configured for `referral` at
+all, there's no way to reach it from app code regardless.
+
+**Conclusion: patient (demographics only), encounter (diagnoses/
+procedureCodes only), referral (nothing) — none of this Sandbox EHR's
+writeback surface can carry "clinical trial candidate" info.** Tier 3
+(clipboard) isn't a fallback we settled for, it's the only tier that was
+ever going to work against this specific test environment's
+configuration. Worth remembering this is Vim's own limited sandbox, not
+representative of every real EHR — a real customer EHR might expose an
+actual notes field or referral writeback, at which point Tier 1/2 code
+paths (kept, not deleted — see "Writeback plan" below) become relevant
+again.
+
 ### ENTITY_NOT_IN_CONTEXT can fire on the very FIRST chart_open:patient resolution — retry added (found/fixed 2026-08-11)
 
 Not just a rapid-transition problem (see below): `getProblems()`/
