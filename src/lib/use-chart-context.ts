@@ -87,7 +87,6 @@ export function useChartContext(): ChartContextState {
 
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
-    let unsubWorkflow: (() => void) | undefined;
 
     (async () => {
       let sdk;
@@ -107,28 +106,7 @@ export function useChartContext(): ChartContextState {
 
       setState({ status: 'waiting-for-chart', problems: [], zip: null });
 
-      // DIAGNOSTIC 2026-08-11 — zip was observed reverting to the standalone
-      // default when navigating off the Demographics tab, and the extension's
-      // own logs showed it treats in-EHR tab navigation as a distinct event
-      // ("[Background] SPA navigation detected"). Logging all three data
-      // sources side by side (workflow event, context subscription, the
-      // getProblems() fallback) so we can see exactly what re-fires, with
-      // what payload, when that happens — rather than guess. Remove once
-      // diagnosed (see CLAUDE.md Phase 5 notes).
-      //
-      // 1) workflow.on — NOT driving state (we know it's one-shot and misses
-      // an already-open patient, see the context.onChange note below); kept
-      // purely to see whether tab navigation *also* re-fires a chart_open
-      // workflow event, and with what entities.patient shape, for comparison.
-      unsubWorkflow = sdk.ehr.workflow.on('chart_open', (event) => {
-        console.log('[trial-match:workflow] chart_open fired', {
-          patientKeys: Object.keys(event.entities.patient ?? {}),
-          address: event.entities.patient?.address,
-          problemsCount: event.entities.patient?.problems?.length,
-        });
-      });
-
-      // 2) context.onChange, not workflow.on('chart_open', ...) — workflow
+      // context.onChange, not workflow.on('chart_open', ...) — workflow
       // events are one-shot triggers that only fire on the *next* open
       // transition, so if a patient was already in context before our
       // multi-step OAuth redirect finished, we'd miss that one-time event and
@@ -138,23 +116,24 @@ export function useChartContext(): ChartContextState {
       // own pattern. Note the different shape: data arrives as
       // { fields: Partial<Patient> }, not the patient object directly like
       // the workflow event gave us.
+      //
+      // Confirmed 2026-08-11 (via diagnostic logging, since removed — see git
+      // history) that this subscription re-fires when the provider switches
+      // EHR tabs, and `address` specifically comes back empty on that
+      // re-fire — `problems` (resolved via the real getProblems() API call
+      // below) is unaffected, so this looks like address/zip being sourced
+      // from the Demographics tab's rendered DOM rather than a stable API,
+      // and simply not being available once you navigate away from it. The
+      // patient's zip hasn't actually changed, so we keep the last known-good
+      // value (via the setState updater form) instead of blanking it out
+      // every time a transient update doesn't include it.
       unsubscribe = sdk.ehr.context.onChange('chart_open:patient', async (prev, curr) => {
-        console.log('[trial-match:context] chart_open:patient changed', {
-          hadPrev: !!prev,
-          hasCurr: !!curr,
-          prevAddress: prev?.fields?.address,
-          currAddress: curr?.fields?.address,
-          prevProblemsCount: prev?.fields?.problems?.length,
-          currProblemsCount: curr?.fields?.problems?.length,
-        });
-
         if (!curr) {
           setState({ status: 'waiting-for-chart', problems: [], zip: null });
           return;
         }
 
         const patient = curr.fields;
-        const zip = patient.address?.zipCode ?? null;
 
         // Confirmed 2026-08-11 against the real Sandbox EHR: chart_open:patient
         // does NOT populate `problems` inline (it was always undefined, while
@@ -164,18 +143,13 @@ export function useChartContext(): ChartContextState {
         // original architecture note.
         let rawProblems = patient.problems;
         if (!rawProblems || rawProblems.length === 0) {
-          // 3) the getProblems() fallback itself.
           try {
             const res = await sdk.ehr.api.patient.getProblems();
-            console.log('[trial-match:getProblems] fallback result', {
-              success: res.success,
-              count: res.success ? res.data?.length : undefined,
-            });
             if (res.success) {
               rawProblems = res.data;
             }
           } catch (err) {
-            console.warn('[trial-match:getProblems] fallback threw', err);
+            console.warn('[trial-match] getProblems() fallback failed:', err);
           }
         }
         if (cancelled) return;
@@ -188,14 +162,16 @@ export function useChartContext(): ChartContextState {
             searchTerm: p.description as string,
           }));
 
-        console.log('[trial-match:context] resolved state', { zip, problemCount: problems.length });
-        setState({ status: 'chart-ready', problems, zip });
+        setState((prevState) => ({
+          status: 'chart-ready',
+          problems,
+          zip: patient.address?.zipCode ?? prevState.zip,
+        }));
       });
     })();
 
     return () => {
       cancelled = true;
-      unsubWorkflow?.();
       unsubscribe?.();
     };
   }, []);
