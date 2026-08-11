@@ -228,10 +228,22 @@ export function useChartContext(): ChartContextState {
       // navigating off the Demographics tab (looks DOM-sourced, not a stable
       // API) — falls back to getPatient(), the same no-arg/context-resolved
       // pattern as getProblems(), which is empirically tab-independent.
+      //
+      // Bumped on every call so a stale in-flight call can tell it's been
+      // superseded. Confirmed 2026-08-11: rapid chart/encounter transitions
+      // (e.g. bouncing between two encounters) fire multiple context.onChange
+      // events in quick succession, each kicking off its own async
+      // getProblems()/getPatient() round trip — without this, a slower call
+      // for an OLDER context can resolve after a newer one and clobber it
+      // with stale (or, worse, error-empty) data. `cancelled` alone only
+      // guards unmount, not this kind of overlap.
+      let resolveGeneration = 0;
+
       async function resolvePatientFields(fields: {
         problems?: { code?: string; status?: string; description?: string }[];
         address?: { zipCode?: string };
       }) {
+        const myGeneration = ++resolveGeneration;
         let rawProblems = fields.problems;
         if (!rawProblems || rawProblems.length === 0) {
           try {
@@ -272,7 +284,7 @@ export function useChartContext(): ChartContextState {
             console.warn('[trial-match:getPatient] fallback threw', err);
           }
         }
-        if (cancelled) return;
+        if (cancelled || myGeneration !== resolveGeneration) return;
 
         const problems: ActiveProblem[] = (rawProblems ?? [])
           .filter((p) => p.description && isActiveStatus(p.status))
@@ -284,12 +296,19 @@ export function useChartContext(): ChartContextState {
 
         console.log('[trial-match:context] resolved state', { zip, problemCount: problems.length });
 
-        // Belt-and-suspenders: if getPatient() somehow also comes back
-        // without an address, keep the last known-good zip rather than
-        // regressing to null — the patient's zip hasn't actually changed.
+        // Sticky fallback for BOTH fields, not just zip: confirmed 2026-08-11
+        // this EHR can throw ("No patient is in the current EHR context")
+        // rather than cleanly returning empty/success:false when a
+        // fast-moving context transition catches getProblems()/getPatient()
+        // between states. Without this, `problems` silently reset to `[]`
+        // on every such failure even though the patient's actual problem
+        // list hadn't changed — that's what looked like "losing patient
+        // context" when opening an encounter. Same reasoning as zip: the
+        // data hasn't changed just because this particular call couldn't
+        // resolve it, so don't regress a known-good list to empty.
         setState((prevState) => ({
           status: 'chart-ready',
-          problems,
+          problems: problems.length > 0 ? problems : prevState.problems,
           zip: zip ?? prevState.zip,
         }));
       }
