@@ -195,6 +195,40 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
+### diagnoses writeback is DOM automation against a real ICD-10 search widget, not a data write (found 2026-08-11)
+
+Testing `sdk.ehr.context.encounter.update({ diagnoses: [...] }, { mode:
+'append' })` directly via `window.__trialMatchSdk` (bypassing our own
+button/state entirely) surfaced a much more specific error than the
+generic `waitForElement`/`9999` one seen earlier: `Step 1 failed: Click
+target not found: #vc-encounter-icd-search div.input`. Confirmed by
+screenshot: this Sandbox EHR's Assessments panel has a real "Search
+ICD-10 codes to add..." widget with that exact id. **Conclusion: this
+EHR's `diagnoses` writeback is implemented as simulated UI interaction
+against that specific search widget — click in, search, select — not a
+schema-validated data merge.** That widget only exists in the DOM when
+the Assessments/Diagnoses panel is actually open and rendered in the main
+EHR window, which explains the earlier generic timeout: the automation
+had nothing to click.
+
+This also answers "why doesn't `getCapability()` tell you the required
+shape" (Dave, 2026-08-11): it can't — `CapabilityResult` is only
+`{available, disruptive, permissionState}` (or `{available:false,
+reason}`), and `update()`'s only documented contract is the generic
+nested-object shape. Neither surfaces that a given field's write is
+backed by DOM automation against a specific EHR UI element rather than a
+plain data merge — that's invisible to the type system and only
+discoverable by hitting the actual failure, which is what happened here.
+
+**Still open:** whether a write succeeds with the panel open. If it does,
+"Add to chart" would need the same precondition — not guaranteed from a
+sidepanel click, since the provider may not have that panel open. If it
+still fails with the panel open, that's a stronger signal this mechanism
+also requires a real, selectable ICD-10 code (not free text) to complete
+the simulated search-and-select, which "clinical trial candidate" has no
+match for — pushing back toward Tier 3 for this EHR regardless of Dave's
+diagnoses-anyway choice above.
+
 ### Real cause of lost patient context found: maybeResetToWaiting fired too early (found 2026-08-11)
 
 The sticky-fallback fix above looked like it wasn't working — the fixed
