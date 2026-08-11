@@ -195,6 +195,32 @@ assumes (especially `problems[].status` values — see above), and only
 then move to Phase 5 (encounter writeback), since Tier 1 writeback needs
 a live encounter in context to test against at all.
 
+### ENTITY_NOT_IN_CONTEXT can fire on the very FIRST chart_open:patient resolution — retry added (found/fixed 2026-08-11)
+
+Not just a rapid-transition problem (see below): `getProblems()`/
+`getPatient()` threw `SDKError('ENTITY_NOT_IN_CONTEXT')` on a completely
+fresh connect's first-ever `chart_open:patient` event (`hadPrev: false`),
+with no prior good state to stick to — so this one couldn't be masked by
+the sticky fallback, it just showed as problems/zip never loading at all.
+Root cause: an inherent race between `context.onChange` telling app code
+"a patient is in context" and the SDK client's own internal context cache
+(used by these calls' guard, `SDKClient.ts:704`) catching up — confirmed
+this isn't specific to encounter transitions. The error's own message
+text says "try again", so added `callWithContextRetry()`: retry once
+after 300ms on this specific error code before falling back.
+
+Caught along the way: `SDKError` is declared in `@vimconnect/app-sdk`'s
+`.d.ts` (with a documented `code` field) but is **not actually exported
+at runtime** — `next build` failed on `import { SDKError }`, and
+grepping the real `dist/index.mjs` export list confirms it only exports
+the zod schemas plus `getVimSDK`/`getWorkerVimSDK`/`initVimSDK`/
+`initWorkerVimSDK`. The real error class lives inside the dynamically-
+loaded core-sdk script, not this npm package — `instanceof` isn't
+possible. Duck-type on `err.code === 'ENTITY_NOT_IN_CONTEXT'` instead
+(`isEntityNotInContextError()` in `use-chart-context.ts`). Another
+instance of this project's running lesson: verify against the real
+runtime module (or here, even just try building), not just the `.d.ts`.
+
 ### diagnoses writeback confirmed structurally unusable for this feature — switch to Tier 3 (resolved 2026-08-11)
 
 Follow-up to the finding directly below: with a real ICD-10 code
