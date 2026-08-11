@@ -44,7 +44,7 @@ should stay regardless.
 | 2 | Trial-card UI, fed by mock/fixture data, no Vim SDK | ✅ Done 2026-07-31 — see Phase 2 notes below |
 | 3 | Wire real Phase 1 API into Phase 2 UI | ✅ Done 2026-07-31 — see Phase 3 notes below |
 | 4 | Vim SDK: `chart_open` handler, token endpoint, hosting/registration, auth flow | ✅ Done 2026-08-05 — see `VIM-SDK-BRIDGE-TROUBLESHOOTING.md` / `VIM-OAUTH-TROUBLESHOOTING.md` for the full debugging history |
-| 5 | Encounter writeback (Tier 1, adapted to `diagnoses`) | ✅ Done 2026-08-11 — "Add to chart" writes to `encounter.diagnoses` via `context.encounter.update()`; see Phase 4 notes and "Writeback plan" below |
+| 5 | Encounter writeback | ✅ Done 2026-08-11 — Tier 1 (`diagnoses`) tried and confirmed a structural dead end for this EHR; "Add to chart" ships as Tier 3 (copy-to-clipboard) instead. See Phase 4 notes and "Writeback plan" below |
 | 6 | Referral pre-fill (Tier 2) + hardening | ⬜ Not started |
 
 ## Immediate first task
@@ -699,25 +699,36 @@ Still accurate from the original review:
    above) confirms this: `diagnoses` is `[{code, description}]`, nothing
    resembling a notes field exists on the entity at all for this EHR.
 
-   **Dave's decision: write into `diagnoses` anyway**, accepting the
-   semantic mismatch (a trial match isn't a diagnosis) rather than fall
-   back to Tier 3 for this EHR. Implemented in `use-chart-context.ts`'s
-   `addTrialToEncounter()`: `encounter.update({ diagnoses: [{ description:
-   ... }] }, { mode: 'append' })`, gated by `getCapability`/`hasPermission`/
-   `requestPermission('update', { fields: ['diagnoses'] })` first. Wired to
-   the "Add to chart" button in `TrialCard.tsx`, enabled only while
-   `encounterOpen` is true (tracked via the `encounter_open:encounter`
-   subscription in `use-chart-context.ts`). Tier 1 stays correct as
-   *written* above for EHRs that do expose a notes field — don't delete it,
-   it's just not what actually shipped for this EHR.
+   **Dave's initial decision was to write into `diagnoses` anyway**,
+   accepting the semantic mismatch (a trial match isn't a diagnosis)
+   rather than fall back to Tier 3. Implemented in
+   `addTrialToEncounter()`/`encounterOpen` in `use-chart-context.ts`,
+   wired to "Add to chart" in `TrialCard.tsx`. **Superseded the same day**
+   after live testing (with `window.__trialMatchSdk`, a permanent debug
+   hook — see Phase 4 notes) showed this isn't just a semantic mismatch,
+   it's a structural dead end: the write mechanism is DOM automation
+   against a real ICD-10 search widget (`#vc-encounter-icd-search`), needs
+   a valid selectable code just to succeed at all, and even then
+   overwrites any custom `description` with the code's real canonical
+   name — there is no way to get "clinical trial candidate" text into this
+   entity on this EHR, full stop. `addTrialToEncounter()`/`encounterOpen`
+   were removed entirely (not left as dead code) once this was confirmed.
+   Tier 1 stays correct as *written* above for EHRs that expose an actual
+   notes field — this EHR just isn't one of them, for `diagnoses` or
+   anything else.
 2. **Tier 2 — pre-fill a Referral** (Phase 6, opportunistic, EHR-dependent).
    Listen for `referral_start` (fires when the *provider* initiates a
    referral natively in the EHR — the app doesn't spawn referrals on its
    own) and enrich it with the selected trial's site/conditions/notes
    before `referral_save`.
-3. **Tier 3 — universal fallback.** Printable/copyable trial summary,
-   always available regardless of EHR capability. Never let the whole
-   feature depend on writeback support existing — this is the safety net.
+3. **Tier 3 — universal fallback. Shipped 2026-08-11, currently what "Add
+   to chart" actually does for this EHR.** Copies a plain trial summary
+   (title, NCT id, matched condition, sponsor, site/contact, URL) to the
+   clipboard via `navigator.clipboard.writeText()` — see
+   `formatTrialSummary()` in `TrialCard.tsx`. No SDK/encounter dependency
+   at all, works in `standalone` mode too. Always available regardless of
+   EHR capability — this is the safety net Tier 1/2 were supposed to have,
+   and for this EHR it's the only tier that actually works.
 
 ## Known unknowns / things to verify, don't just trust
 
