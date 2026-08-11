@@ -124,24 +124,28 @@ Phase 4's job. (Phase 4 note: it now sources the picklist from
 
 ## Phase 4 notes (done — see "Current status" above for the full debugging history)
 
-### Zip is "sticky" — sourced from the Demographics tab's DOM, not a stable API (found 2026-08-11)
+### Zip: inline address is DOM-sourced and tab-dependent — fall back to getPatient() (found 2026-08-11)
 
 `context.onChange('chart_open:patient', ...)` re-fires when the provider
 switches EHR tabs (confirmed via diagnostic logging, since removed —
-see git history around this date). On that re-fire, `address` comes
-back `undefined` while `problems` (resolved via the real
+see git history around this date). On that re-fire, inline `address`
+comes back `undefined` while `problems` (resolved via the real
 `getProblems()` API call, not an inline context field) stays correct —
 strongly suggesting address/zip is sourced by the extension reading the
 Demographics tab's rendered DOM (matching the `dom`/`angular`/`ember`/
 `backbone` detection drivers seen in the extension's own boot logs),
-not a stable, tab-independent API call. Since the patient's zip hasn't
-actually changed just because the provider clicked a different tab,
-`use-chart-context.ts` now keeps the last known-good zip (via the
-`setState` updater form, falling back to `prevState.zip`) instead of
-blanking it out on every transient update that lacks address data. If
-a *different* real EHR turns out to source address differently (a
-stable API, always present regardless of tab), this stickiness is
-harmless — it just never triggers.
+not a stable, tab-independent API call.
+
+First fix attempt kept the last known-good zip client-side (a
+workaround, not a real fix). **Corrected fix:** `getPatient()` is the
+same no-arg, context-resolved `PatientApi` pattern as `getProblems()` —
+and since `getProblems()` is empirically confirmed tab-independent,
+`getPatient()` should be too. `use-chart-context.ts` now falls back to
+`getPatient()` for address whenever the inline field is empty, exactly
+mirroring the `getProblems()` fallback already in place for problems.
+The "keep last known-good zip" logic is still there as a final
+belt-and-suspenders layer only, in case `getPatient()` also somehow
+lacks address for some reason — not the primary fix anymore.
 
 **Before touching this again, re-read the "Vim SDK reference" section
 below — it corrects three wrong assumptions from the original chat
