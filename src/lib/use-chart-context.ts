@@ -115,19 +115,35 @@ export function useChartContext(): ChartContextState {
       // subscribing, matching the official quick-start guide's own pattern.
       // Note the different shape: data arrives as { fields: Partial<Patient> },
       // not the patient object directly like the workflow event gave us.
-      unsubscribe = sdk.ehr.context.onChange('chart_open:patient', (prev, curr) => {
+      unsubscribe = sdk.ehr.context.onChange('chart_open:patient', async (prev, curr) => {
         if (!curr) {
           setState({ status: 'waiting-for-chart', problems: [], zip: null });
           return;
         }
 
         const patient = curr.fields;
-        // TEMP DEBUG 2026-08-11 — zip populates correctly but problems don't;
-        // logging the raw shape to see what the real Sandbox EHR actually
-        // sends before guessing at a filter/field-name fix. Remove once
-        // diagnosed — see CLAUDE.md Phase 5 notes.
-        console.log('[trial-match debug] raw patient.problems:', JSON.stringify(patient.problems));
-        const problems: ActiveProblem[] = (patient.problems ?? [])
+        const zip = patient.address?.zipCode ?? null;
+
+        // Confirmed 2026-08-11 against the real Sandbox EHR: chart_open:patient
+        // does NOT populate `problems` inline (it was always undefined, while
+        // `address.zipCode` came through fine) — this EHR needs the dedicated,
+        // context-resolved API instead. Falls back only when the inline field
+        // is empty, since other EHRs may still populate it inline per the
+        // original architecture note.
+        let rawProblems = patient.problems;
+        if (!rawProblems || rawProblems.length === 0) {
+          try {
+            const res = await sdk.ehr.api.patient.getProblems();
+            if (res.success) {
+              rawProblems = res.data;
+            }
+          } catch (err) {
+            console.warn('[trial-match] getProblems() fallback failed:', err);
+          }
+        }
+        if (cancelled) return;
+
+        const problems: ActiveProblem[] = (rawProblems ?? [])
           .filter((p) => p.description && isActiveStatus(p.status))
           .map((p, i) => ({
             id: p.code ?? `problem-${i}`,
@@ -135,11 +151,7 @@ export function useChartContext(): ChartContextState {
             searchTerm: p.description as string,
           }));
 
-        setState({
-          status: 'chart-ready',
-          problems,
-          zip: patient.address?.zipCode ?? null,
-        });
+        setState({ status: 'chart-ready', problems, zip });
       });
     })();
 
